@@ -14,6 +14,7 @@ rodio = "0.13"
 songbird = "0.1"
 rb = "0.3"
 hound = "3.4"
+dasp = { version = "0.11", features = ["all"] }
 
 [dependencies.serenity]
 version = "0.10"

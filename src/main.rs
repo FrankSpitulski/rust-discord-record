@@ -6,19 +6,27 @@
 //! git = "https://github.com/serenity-rs/serenity.git"
 //! features = ["client", "standard_framework", "voice"]
 //! ```
-use std::{env};
-
 extern crate rb;
 
+use std::env;
+use std::path::Path;
+use std::sync::Arc;
+use std::thread::sleep;
+use std::time::Duration;
+
+use rb::{RB, RbConsumer, RbInspector, RbProducer};
+use rodio::buffer::SamplesBuffer;
+use rodio::dynamic_mixer::DynamicMixerController;
+use rodio::source::Zero;
 use serenity::{
     async_trait,
     client::{Client, Context, EventHandler},
     framework::{
-        StandardFramework,
         standard::{
-            macros::{command, group},
-            Args, CommandResult,
+            Args,
+            CommandResult, macros::{command, group},
         },
+        StandardFramework,
     },
     model::{
         channel::Message,
@@ -28,19 +36,16 @@ use serenity::{
     },
     Result as SerenityResult,
 };
-
 use songbird::{
-    driver::{Config as DriverConfig, DecodeMode},
-    model::payload::{ClientConnect, ClientDisconnect, Speaking},
     CoreEvent,
+    driver::{Config as DriverConfig, DecodeMode},
     Event,
     EventContext,
     EventHandler as VoiceEventHandler,
+    model::payload::{ClientConnect, ClientDisconnect, Speaking},
     SerenityInit,
     Songbird,
 };
-use std::io::Cursor;
-use rb::{RB, RbProducer, RbConsumer, RbInspector};
 
 
 struct Handler;
@@ -53,61 +58,68 @@ impl EventHandler for Handler {
 }
 
 struct Receiver {
-    buf: rb::SpscRb<i16>,
-
+    input: Arc<DynamicMixerController<i16>>
 }
 
 impl Receiver {
     pub fn new() -> Self {
         // You can manage state here, such as a buffer of audio packet bytes so
         // you can later store them in intervals.
-        const SIZE: usize = 1024 * 1024 * 64;
-        let buf = rb::SpscRb::new(SIZE);
-        Self { buf }
-    }
-    pub fn export_as_wav(&self) -> Option<Cursor<Vec<u8>>> {
-        if self.buf.count() < 10000 {
-            return None;
-        }
-        let consumer = self.buf.consumer();
-        let mut buf = vec![0; self.buf.count()];
-        match consumer.read(buf.as_mut_slice()) {
-            Ok(size) if size > 0 => {
-                buf.truncate(size);
-                let mut reader = Cursor::new(Vec::new());
-                let mut writer = hound::WavWriter::new(
-                    &mut reader,
-                    hound::WavSpec {
-                        channels: 2,
-                        sample_rate: 48000,
-                        bits_per_sample: 16,
-                        sample_format: hound::SampleFormat::Int,
-                    },
-                )
-                    .unwrap();
-                for x in buf {
-                    writer.write_sample(x).unwrap();
+        // const SIZE: usize = 1024 * 1024 * 64;
+        // let buf = rb::SpscRb::new(SIZE);
+        // Self { buf }
+        let (input, mut output) = rodio::dynamic_mixer::mixer(2, 48000);
+        input.add(Zero::new(2, 48000));
+        tokio::spawn(async move {
+            let path: &Path = "test.wav".as_ref();
+
+            let mut writer = hound::WavWriter::create(path, hound::WavSpec {
+                channels: 2,
+                sample_rate: 48000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            }).unwrap();
+
+            let start = std::time::SystemTime::now();
+
+            while std::time::SystemTime::now() < start + std::time::Duration::from_secs(10) {
+                for _ in 0..2 * 512 {
+                    let sample = output.next().unwrap();
+                    writer.write_sample(sample).unwrap();
                 }
-                writer.finalize().unwrap();
-                reader.set_position(0);
-                return Some(reader);
+                sleep(Duration::from_millis(10))
             }
-            _ => {}
-        };
-        return None;
+            // for x in output.into_iter() {
+            //     print!("{}", x);
+            //     writer.write_sample(x);
+            // }
+
+            writer.finalize().unwrap();
+
+
+            // let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
+            // stream_handle.play_raw(output.convert_samples()).expect("something broke");
+            // sleep(Duration::new(u64::MAX, 1_000_000_000 - 1))
+        });
+
+        Self { input }
+    }
+
+    pub fn add_sound(&self, data: Vec<i16>) {
+        let samples_buffer = SamplesBuffer::new(2, 48000, data);
+        self.input.add(samples_buffer);
     }
 }
 
-async fn play_sound(reader: Cursor<Vec<u8>>) {
-    let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
-    match stream_handle.play_once(reader) {
-        Ok(sink) => {
-            sink.play();
-            sink.sleep_until_end();
-        }
-        Err(e) => { eprintln!("error playing sound {}", e) }
-    };
-}
+// async fn play_sound(reader: Vec<i16>) {
+//     let (input, mut output): (Arc<DynamicMixerController<i16>>, DynamicMixer<i16>) = rodio::dynamic_mixer::mixer(2, 48000);
+//     let samples_buffer = SamplesBuffer::new(2, 48000, reader);
+//     let duration = samples_buffer.total_duration().unwrap() * 2;
+//     input.add(samples_buffer);
+//     let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
+//     stream_handle.play_raw(output.convert_samples()).expect("something broke");
+//     sleep(duration)
+// }
 
 #[async_trait]
 impl VoiceEventHandler for Receiver {
@@ -157,12 +169,14 @@ impl VoiceEventHandler for Receiver {
                     //     packet.payload.len(),
                     //     packet.ssrc,
                     // );
-                    let i = self.buf.producer().write(audio).unwrap();
+
+                    // let mut frames = signal::from_interleaved_samples_iter(audio.iter().map(|x| x.to_sample())).until_exhausted();
+
+                    // let i = self.buf.producer().write(audio).unwrap();
                     // println!("wrote {}", i);
                     // println!("count in buffer {}", self.buf.count());
-                    self.export_as_wav().map(|sound_data|
-                        tokio::spawn(play_sound(sound_data))
-                    );
+                    self.add_sound(audio.clone());
+                    // tokio::spawn(play_sound(audio.clone()));
                 } else {
                     println!("RTP packet, but no audio. Driver may not be configured to decode.");
                 }
