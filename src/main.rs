@@ -10,7 +10,7 @@ extern crate rb;
 
 use std::env;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Condvar};
 use std::thread::sleep;
 use std::time::Duration;
 use cpal;
@@ -48,8 +48,13 @@ use songbird::{
     Songbird,
 };
 use rodio::Source;
-use cpal::traits::HostTrait;
+use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
 use tracing_futures::WithSubscriber;
+use cpal::{StreamConfig, SampleRate, BufferSize};
+use std::io::BufWriter;
+use std::fs::File;
+use hound::WavWriter;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 
 struct Handler;
@@ -73,10 +78,48 @@ impl Receiver {
         // let buf = rb::SpscRb::new(SIZE);
         // Self { buf }
         let (input, mut output) = rodio::dynamic_mixer::mixer(2, 48000);
-        input.add(Zero::new(2, 48000));
+        // input.add(Zero::new(2, 48000));
         tokio::spawn(async move {
             let path: &Path = "test.wav".as_ref();
 
+            let mut buf = Arc::new(Mutex::new(Vec::new()));
+            let buf_read = buf.clone();
+            let pair = Arc::new((Mutex::new(false), Condvar::new()));
+            let pair2 = Arc::clone(&pair);
+
+            let start = std::time::SystemTime::now();
+
+
+            let device = cpal::default_host()
+                .default_output_device().unwrap();
+            let config = StreamConfig {
+                channels: output.channels(),
+                sample_rate: SampleRate(output.sample_rate()),
+                buffer_size: BufferSize::Default,
+            };
+            let supported_config = device.default_output_config().unwrap();
+            let stream = device.build_output_stream(&supported_config.config(), move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                // println!("triggered in output stream");
+                if !(std::time::SystemTime::now() < start + std::time::Duration::from_secs(5)) {
+                    let (lock, cvar) = &*pair2;
+                    let mut started = lock.lock().unwrap();
+                    *started = true;
+                    // We notify the condvar that the value has changed.
+                    cvar.notify_one();
+                    return;
+                }
+                let mut guard = buf.lock().unwrap();
+                // react to stream events and read or write stream data here.
+                data.iter()
+                    .for_each(|_| {
+                        let sample = output.next().unwrap_or(0);
+                        guard.push(sample);
+                    });
+                println!("buf size after write {}", guard.len());
+            }, move |err| {
+                // react to errors here.
+            }).unwrap();
+            stream.play().unwrap();
             let mut writer = hound::WavWriter::create(path, hound::WavSpec {
                 channels: 2,
                 sample_rate: 48000,
@@ -84,19 +127,25 @@ impl Receiver {
                 sample_format: hound::SampleFormat::Int,
             }).unwrap();
 
-            let start = std::time::SystemTime::now();
-            const BUFFER_DURATION_MILLIS: u32 = 10;
-            let mut interval = tokio::time::interval(Duration::from_millis(BUFFER_DURATION_MILLIS as u64));
-            while std::time::SystemTime::now() < start + std::time::Duration::from_secs(5) {
-                interval.tick().await;
-                for _ in 0..output.channels() as u32 * output.sample_rate() / (1000 / BUFFER_DURATION_MILLIS) {
-                    let sample = output.next().unwrap_or(0);
-                    writer.write_sample(sample).unwrap();
+            // Wait for the thread to start up.
+            {
+                let (lock, cvar) = &*pair;
+                let mut started = lock.lock().unwrap();
+                while !*started {
+                    started = cvar.wait(started).unwrap();
                 }
             }
-
+            {
+                let guard1 = buf_read.lock().unwrap();
+                println!("buf size before wav write {}", guard1.len());
+                for sample in guard1.iter() {
+                    writer.write_sample(*sample).unwrap();
+                }
+            }
             writer.finalize().unwrap();
             println!("done");
+
+
             // let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
             // stream_handle.play_raw(output.convert_samples()).expect("something broke");
             // sleep(Duration::new(u64::MAX, 1_000_000_000 - 1))
