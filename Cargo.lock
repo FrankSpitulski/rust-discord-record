@@ -1729,6 +1729,7 @@ dependencies = [
 name = "rust-discord-record"
 version = "0.1.0"
 dependencies = [
+ "cpal",
  "dasp",
  "hound",
  "rb",

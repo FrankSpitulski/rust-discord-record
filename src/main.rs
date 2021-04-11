@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
+use cpal;
 
 use rb::{RB, RbConsumer, RbInspector, RbProducer};
 use rodio::buffer::SamplesBuffer;
@@ -46,6 +47,9 @@ use songbird::{
     SerenityInit,
     Songbird,
 };
+use rodio::Source;
+use cpal::traits::HostTrait;
+use tracing_futures::WithSubscriber;
 
 
 struct Handler;
@@ -81,22 +85,18 @@ impl Receiver {
             }).unwrap();
 
             let start = std::time::SystemTime::now();
-
-            while std::time::SystemTime::now() < start + std::time::Duration::from_secs(10) {
-                for _ in 0..2 * 512 {
-                    let sample = output.next().unwrap();
+            const BUFFER_DURATION_MILLIS: u32 = 10;
+            let mut interval = tokio::time::interval(Duration::from_millis(BUFFER_DURATION_MILLIS as u64));
+            while std::time::SystemTime::now() < start + std::time::Duration::from_secs(5) {
+                interval.tick().await;
+                for _ in 0..output.channels() as u32 * output.sample_rate() / (1000 / BUFFER_DURATION_MILLIS) {
+                    let sample = output.next().unwrap_or(0);
                     writer.write_sample(sample).unwrap();
                 }
-                sleep(Duration::from_millis(10))
             }
-            // for x in output.into_iter() {
-            //     print!("{}", x);
-            //     writer.write_sample(x);
-            // }
 
             writer.finalize().unwrap();
-
-
+            println!("done");
             // let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
             // stream_handle.play_raw(output.convert_samples()).expect("something broke");
             // sleep(Duration::new(u64::MAX, 1_000_000_000 - 1))
