@@ -6,7 +6,6 @@
 //! git = "https://github.com/serenity-rs/serenity.git"
 //! features = ["client", "standard_framework", "voice"]
 //! ```
-extern crate rb;
 
 use std::env;
 use std::path::Path;
@@ -15,7 +14,7 @@ use std::thread::sleep;
 use std::time::Duration;
 use cpal;
 
-use rb::{RB, RbConsumer, RbInspector, RbProducer};
+use circular_queue::CircularQueue;
 use rodio::buffer::SamplesBuffer;
 use rodio::dynamic_mixer::DynamicMixerController;
 use rodio::source::Zero;
@@ -55,6 +54,7 @@ use std::io::BufWriter;
 use std::fs::File;
 use hound::WavWriter;
 use std::sync::atomic::{AtomicBool, Ordering};
+use serenity::prelude::TypeMapKey;
 
 
 struct Handler;
@@ -67,108 +67,78 @@ impl EventHandler for Handler {
 }
 
 struct Receiver {
-    input: Arc<DynamicMixerController<i16>>
+    input: Arc<DynamicMixerController<i16>>,
+    buf: Arc<Mutex<CircularQueue<i16>>>,
 }
 
 impl Receiver {
     pub fn new() -> Self {
         // You can manage state here, such as a buffer of audio packet bytes so
         // you can later store them in intervals.
-        // const SIZE: usize = 1024 * 1024 * 64;
-        // let buf = rb::SpscRb::new(SIZE);
-        // Self { buf }
+        const SIZE: usize = 2 * 48000 * 60; // 60 seconds
+        let buf = Arc::new(Mutex::new(CircularQueue::with_capacity(SIZE)));
         let (input, mut output) = rodio::dynamic_mixer::mixer(2, 48000);
-        // input.add(Zero::new(2, 48000));
+
+        let mut buf_writer_ref = buf.clone();
         tokio::spawn(async move {
-            let path: &Path = "test.wav".as_ref();
-
-            let mut buf = Arc::new(Mutex::new(Vec::new()));
-            let buf_read = buf.clone();
-            let pair = Arc::new((Mutex::new(false), Condvar::new()));
-            let pair2 = Arc::clone(&pair);
-
-            let start = std::time::SystemTime::now();
-
-
             let device = cpal::default_host()
                 .default_output_device().unwrap();
-            let config = StreamConfig {
+            let config = StreamConfig { // TODO make sure it's the right config
                 channels: output.channels(),
                 sample_rate: SampleRate(output.sample_rate()),
                 buffer_size: BufferSize::Default,
             };
             let supported_config = device.default_output_config().unwrap();
             let stream = device.build_output_stream(&supported_config.config(), move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                // println!("triggered in output stream");
-                if !(std::time::SystemTime::now() < start + std::time::Duration::from_secs(5)) {
-                    let (lock, cvar) = &*pair2;
-                    let mut started = lock.lock().unwrap();
-                    *started = true;
-                    // We notify the condvar that the value has changed.
-                    cvar.notify_one();
-                    return;
-                }
-                let mut guard = buf.lock().unwrap();
+                let mut unlocked_buf_writer = buf_writer_ref.lock().unwrap();
                 // react to stream events and read or write stream data here.
                 data.iter()
                     .for_each(|_| {
                         let sample = output.next().unwrap_or(0);
-                        guard.push(sample);
-                    });
-                println!("buf size after write {}", guard.len());
+                        unlocked_buf_writer.push(sample);
+                    })
             }, move |err| {
                 // react to errors here.
             }).unwrap();
             stream.play().unwrap();
-            let mut writer = hound::WavWriter::create(path, hound::WavSpec {
-                channels: 2,
-                sample_rate: 48000,
-                bits_per_sample: 16,
-                sample_format: hound::SampleFormat::Int,
-            }).unwrap();
-
-            // Wait for the thread to start up.
-            {
-                let (lock, cvar) = &*pair;
-                let mut started = lock.lock().unwrap();
-                while !*started {
-                    started = cvar.wait(started).unwrap();
-                }
-            }
-            {
-                let guard1 = buf_read.lock().unwrap();
-                println!("buf size before wav write {}", guard1.len());
-                for sample in guard1.iter() {
-                    writer.write_sample(*sample).unwrap();
-                }
-            }
-            writer.finalize().unwrap();
-            println!("done");
 
 
             // let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
             // stream_handle.play_raw(output.convert_samples()).expect("something broke");
-            // sleep(Duration::new(u64::MAX, 1_000_000_000 - 1))
+            sleep(Duration::new(u64::MAX, 1_000_000_000 - 1)); // TODO replace with cond wait until Receiver Drop
         });
 
-        Self { input }
+        Self { input, buf }
     }
 
     pub fn add_sound(&self, data: Vec<i16>) {
         let samples_buffer = SamplesBuffer::new(2, 48000, data);
         self.input.add(samples_buffer);
     }
+
+    pub fn drain_buffer(&self) {
+        let path: &Path = "test.wav".as_ref();
+        let mut writer = hound::WavWriter::create(path, hound::WavSpec {
+            channels: 2,
+            sample_rate: 48000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        }).unwrap();
+        {
+            let unlocked_reader = self.buf.lock().unwrap();
+            println!("buf size before wav write {}", unlocked_reader.len());
+            for sample in unlocked_reader.asc_iter() {
+                writer.write_sample(*sample).unwrap();
+            }
+        }
+        writer.finalize().unwrap();
+        println!("done");
+    }
 }
 
-// async fn play_sound(reader: Vec<i16>) {
-//     let (input, mut output): (Arc<DynamicMixerController<i16>>, DynamicMixer<i16>) = rodio::dynamic_mixer::mixer(2, 48000);
-//     let samples_buffer = SamplesBuffer::new(2, 48000, reader);
-//     let duration = samples_buffer.total_duration().unwrap() * 2;
-//     input.add(samples_buffer);
-//     let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
-//     stream_handle.play_raw(output.convert_samples()).expect("something broke");
-//     sleep(duration)
-// }
+impl TypeMapKey for Receiver {
+    type Value = Arc<Receiver>;
+}
 
 #[async_trait]
 impl VoiceEventHandler for Receiver {
@@ -210,22 +180,7 @@ impl VoiceEventHandler for Receiver {
                 // An event which fires for every received audio packet,
                 // containing the decoded data.
                 if let Some(audio) = audio {
-                    // println!("Audio packet's first 5 samples: {:?}", audio.get(..5.min(audio.len())));
-                    // println!(
-                    //     "Audio packet sequence {:05} has {:04} bytes (decompressed from {}), SSRC {}",
-                    //     packet.sequence.0,
-                    //     audio.len() * std::mem::size_of::<i16>(),
-                    //     packet.payload.len(),
-                    //     packet.ssrc,
-                    // );
-
-                    // let mut frames = signal::from_interleaved_samples_iter(audio.iter().map(|x| x.to_sample())).until_exhausted();
-
-                    // let i = self.buf.producer().write(audio).unwrap();
-                    // println!("wrote {}", i);
-                    // println!("count in buffer {}", self.buf.count());
                     self.add_sound(audio.clone());
-                    // tokio::spawn(play_sound(audio.clone()));
                 } else {
                     println!("RTP packet, but no audio. Driver may not be configured to decode.");
                 }
@@ -268,8 +223,20 @@ impl VoiceEventHandler for Receiver {
     }
 }
 
+struct ArcEventHandlerInvoker<T: VoiceEventHandler> {
+    delegate: Arc<T>
+}
+
+#[async_trait]
+impl<T: VoiceEventHandler> VoiceEventHandler for ArcEventHandlerInvoker<T> {
+    #[allow(unused_variables)]
+    async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
+        self.delegate.act(ctx).await
+    }
+}
+
 #[group]
-#[commands(join, leave, ping)]
+#[commands(join, leave, ping, dump)]
 struct General;
 
 #[tokio::main]
@@ -300,6 +267,11 @@ async fn main() {
         .register_songbird_with(songbird.into())
         .await
         .expect("Err creating client");
+
+    {
+        let mut data = client.data.write().await;
+        data.insert::<Receiver>(Arc::new(Receiver::new()));
+    }
 
     let _ = client.start().await.map_err(|why| println!("Client ended: {:?}", why));
 }
@@ -337,11 +309,11 @@ async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
         //     CoreEvent::SpeakingUpdate.into(),
         //     Receiver::new(),
         // );
-
-        let receiver = Receiver::new();
+        let data_read = ctx.data.read().await;
+        let receiver = data_read.get::<Receiver>().unwrap().clone();
         handler.add_global_event(
             CoreEvent::VoicePacket.into(),
-            receiver,
+            ArcEventHandlerInvoker { delegate: receiver },
         );
 
 
@@ -403,4 +375,18 @@ fn check_msg(result: SerenityResult<Message>) {
     if let Err(why) = result {
         println!("Error sending message: {:?}", why);
     }
+}
+
+#[command]
+async fn dump(ctx: &Context, msg: &Message) -> CommandResult {
+    let receiver;
+    {
+        let data_read = ctx.data.read().await;
+        receiver = data_read.get::<Receiver>().unwrap().clone();
+    }
+    check_msg(msg.channel_id.say(&ctx.http, "draining").await);
+    receiver.drain_buffer();
+    check_msg(msg.channel_id.say(&ctx.http, "drained").await);
+
+    Ok(())
 }
