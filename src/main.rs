@@ -9,15 +9,17 @@
 
 use std::env;
 use std::path::Path;
-use std::sync::{Arc, Mutex, Condvar};
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
-use cpal;
 
 use circular_queue::CircularQueue;
+use cpal;
+use cpal::{BufferSize, Sample, SampleRate, StreamConfig};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::buffer::SamplesBuffer;
 use rodio::dynamic_mixer::DynamicMixerController;
-use rodio::source::Zero;
+use rodio::Source;
 use serenity::{
     async_trait,
     client::{Client, Context, EventHandler},
@@ -36,6 +38,7 @@ use serenity::{
     },
     Result as SerenityResult,
 };
+use serenity::prelude::TypeMapKey;
 use songbird::{
     CoreEvent,
     driver::{Config as DriverConfig, DecodeMode},
@@ -46,16 +49,6 @@ use songbird::{
     SerenityInit,
     Songbird,
 };
-use rodio::Source;
-use cpal::traits::{HostTrait, DeviceTrait, StreamTrait};
-use tracing_futures::WithSubscriber;
-use cpal::{StreamConfig, SampleRate, BufferSize};
-use std::io::BufWriter;
-use std::fs::File;
-use hound::WavWriter;
-use std::sync::atomic::{AtomicBool, Ordering};
-use serenity::prelude::TypeMapKey;
-
 
 struct Handler;
 
@@ -79,26 +72,31 @@ impl Receiver {
         let buf = Arc::new(Mutex::new(CircularQueue::with_capacity(SIZE)));
         let (input, mut output) = rodio::dynamic_mixer::mixer(2, 48000);
 
-        let mut buf_writer_ref = buf.clone();
+        let buf_writer_ref = buf.clone();
         tokio::spawn(async move {
             let device = cpal::default_host()
                 .default_output_device().unwrap();
-            let config = StreamConfig { // TODO make sure it's the right config
+            let config = StreamConfig {
                 channels: output.channels(),
                 sample_rate: SampleRate(output.sample_rate()),
                 buffer_size: BufferSize::Default,
             };
             let supported_config = device.default_output_config().unwrap();
+            if supported_config.channels() != config.channels || supported_config.sample_rate() != config.sample_rate {
+                panic!("supported config doesn't match")
+            }
             let stream = device.build_output_stream(&supported_config.config(), move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 let mut unlocked_buf_writer = buf_writer_ref.lock().unwrap();
                 // react to stream events and read or write stream data here.
-                data.iter()
-                    .for_each(|_| {
+                data.iter_mut()
+                    .for_each(|x| {
                         let sample = output.next().unwrap_or(0);
                         unlocked_buf_writer.push(sample);
+                        // *x=sample.to_f32(); // uncomment to play sound immediately
                     })
             }, move |err| {
                 // react to errors here.
+                println!("some error occurred {:?}", err);
             }).unwrap();
             stream.play().unwrap();
 
@@ -112,8 +110,20 @@ impl Receiver {
     }
 
     pub fn add_sound(&self, data: Vec<i16>) {
+        // Receiver::play_sound(&data);
         let samples_buffer = SamplesBuffer::new(2, 48000, data);
         self.input.add(samples_buffer);
+    }
+
+    fn play_sound(data: &Vec<i16>) {
+        let cloned_data = data.clone();
+        tokio::spawn(async move {
+            let samples_buffer = SamplesBuffer::new(2, 48000, cloned_data);
+            let duration = samples_buffer.total_duration().unwrap();
+            let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
+            stream_handle.play_raw(samples_buffer.convert_samples()).expect("something broke");
+            sleep(duration * 2)
+        });
     }
 
     pub fn drain_buffer(&self) {
@@ -384,9 +394,9 @@ async fn dump(ctx: &Context, msg: &Message) -> CommandResult {
         let data_read = ctx.data.read().await;
         receiver = data_read.get::<Receiver>().unwrap().clone();
     }
-    check_msg(msg.channel_id.say(&ctx.http, "draining").await);
+    check_msg(msg.channel_id.say(&ctx.http, "taking a dump").await);
     receiver.drain_buffer();
-    check_msg(msg.channel_id.say(&ctx.http, "drained").await);
+    check_msg(msg.channel_id.say(&ctx.http, "domped").await);
 
     Ok(())
 }

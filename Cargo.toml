@@ -12,7 +12,7 @@ tracing-subscriber = "0.2"
 tracing-futures = "0.2"
 rodio = "0.13"
 songbird = "0.1"
-circular-queue = "0.2.6"
+circular-queue = "0.2"
 hound = "3.4"
 cpal = "0.13"
 
