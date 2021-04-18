@@ -69,7 +69,7 @@ const BUF_SIZE: usize = 1920; // 20ms @ 48kHz of 2ch 16 bit pcm
 
 struct Receiver {
     buf: Arc<Mutex<CircularQueue<i16>>>,
-    user_to_packet_buffer: Arc<Map<u32, Mutex<VecDeque<[i16; BUF_SIZE]>>>>,
+    user_to_packet_buffer: Arc<Map<u32, Queue<[i16; BUF_SIZE]>>>,
     background_tasks: Vec<JoinHandle<()>>,
 }
 
@@ -101,8 +101,7 @@ impl Receiver {
             self.user_to_packet_buffer.get(&ssrc).unwrap()
         })
             .val()
-            .lock().unwrap()
-            .push_back(buf);
+            .push(buf);
     }
 
     fn start_task_mix_packet_buffer(&mut self) {
@@ -114,17 +113,7 @@ impl Receiver {
                 interval.tick().await;
                 let mut mix_buf = [0i16; BUF_SIZE];
                 for packet_buffer_entry in user_to_packet_buffer.iter() {
-                    let mut packet_buffer = packet_buffer_entry.val().lock().unwrap();
-                    loop {
-                        match packet_buffer.front() {
-                            Some(user_packet)
-                            => {}
-                            // if user_packet.timestamp - packet_buffer.first_timestamp > 1 => {
-                            //     println!("timestamp diff {}", user_packet.timestamp - packet_buffer.first_timestamp);
-                            // }
-                            _ => break
-                        }
-                        let user_packet = packet_buffer.pop_front().unwrap();
+                    for user_packet in packet_buffer_entry.val().pop_iter() {
                         if user_packet.len() != BUF_SIZE {
                             println!("incorrect buffer size packet received, size {}", user_packet.len());
                             continue;
