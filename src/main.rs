@@ -7,16 +7,20 @@
 //! features = ["client", "standard_framework", "voice"]
 //! ```
 
+use std::collections::vec_deque::VecDeque;
 use std::env;
+use std::iter::Peekable;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use circular_queue::CircularQueue;
 use cpal;
 use cpal::{BufferSize, Sample, SampleRate, StreamConfig};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use lockfree::map::Map;
+use lockfree::queue::Queue;
 use rodio::buffer::SamplesBuffer;
 use rodio::dynamic_mixer::DynamicMixerController;
 use rodio::Source;
@@ -49,6 +53,8 @@ use songbird::{
     SerenityInit,
     Songbird,
 };
+use songbird::opus::ffi::OpusRepacketizer;
+use tokio::task::JoinHandle;
 
 struct Handler;
 
@@ -59,9 +65,12 @@ impl EventHandler for Handler {
     }
 }
 
+const BUF_SIZE: usize = 1920; // 20ms @ 48kHz of 2ch 16 bit pcm
+
 struct Receiver {
-    input: Arc<DynamicMixerController<i16>>,
     buf: Arc<Mutex<CircularQueue<i16>>>,
+    user_to_packet_buffer: Arc<Map<u32, Mutex<VecDeque<[i16; BUF_SIZE]>>>>,
+    background_tasks: Vec<JoinHandle<()>>,
 }
 
 impl Receiver {
@@ -69,50 +78,74 @@ impl Receiver {
         // You can manage state here, such as a buffer of audio packet bytes so
         // you can later store them in intervals.
         const SIZE: usize = 2 * 48000 * 60; // 60 seconds
-        let buf = Arc::new(Mutex::new(CircularQueue::with_capacity(SIZE)));
-        let (input, mut output) = rodio::dynamic_mixer::mixer(2, 48000);
 
-        let buf_writer_ref = buf.clone();
-        tokio::spawn(async move {
-            let device = cpal::default_host()
-                .default_output_device().unwrap();
-            let config = StreamConfig {
-                channels: output.channels(),
-                sample_rate: SampleRate(output.sample_rate()),
-                buffer_size: BufferSize::Default,
-            };
-            let supported_config = device.default_output_config().unwrap();
-            if supported_config.channels() != config.channels || supported_config.sample_rate() != config.sample_rate {
-                panic!("supported config doesn't match")
-            }
-            let stream = device.build_output_stream(&supported_config.config(), move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                let mut unlocked_buf_writer = buf_writer_ref.lock().unwrap();
-                // react to stream events and read or write stream data here.
-                data.iter_mut()
-                    .for_each(|x| {
-                        let sample = output.next().unwrap_or(0);
-                        unlocked_buf_writer.push(sample);
-                        // *x=sample.to_f32(); // uncomment to play sound immediately
-                    })
-            }, move |err| {
-                // react to errors here.
-                println!("some error occurred {:?}", err);
-            }).unwrap();
-            stream.play().unwrap();
-
-
-            // let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
-            // stream_handle.play_raw(output.convert_samples()).expect("something broke");
-            sleep(Duration::new(u64::MAX, 1_000_000_000 - 1)); // TODO replace with cond wait until Receiver Drop
-        });
-
-        Self { input, buf }
+        let mut receiver = Self {
+            buf: Arc::new(Mutex::new(CircularQueue::with_capacity(SIZE))),
+            user_to_packet_buffer: Arc::new(Map::new()),
+            background_tasks: Vec::new(),
+        };
+        receiver.start_task_mix_packet_buffer();
+        return receiver;
     }
 
-    pub fn add_sound(&self, data: Vec<i16>) {
-        // Receiver::play_sound(&data);
-        let samples_buffer = SamplesBuffer::new(2, 48000, data);
-        self.input.add(samples_buffer);
+    pub fn add_sound(&self, ssrc: u32, data: Vec<i16>) {
+        if data.len() != BUF_SIZE {
+            return;
+        }
+        let mut buf = [0i16; BUF_SIZE];
+        for i in 0..BUF_SIZE {
+            buf[i] = data[i];
+        }
+        self.user_to_packet_buffer.get(&ssrc).unwrap_or_else(|| {
+            self.user_to_packet_buffer.insert(ssrc, Default::default());
+            self.user_to_packet_buffer.get(&ssrc).unwrap()
+        })
+            .val()
+            .lock().unwrap()
+            .push_back(buf);
+    }
+
+    fn start_task_mix_packet_buffer(&mut self) {
+        let user_to_packet_buffer = self.user_to_packet_buffer.clone();
+        let output_buffer = self.buf.clone();
+        let mut interval = tokio::time::interval(Duration::from_millis(20));
+        let join_handle = tokio::spawn(async move {
+            loop {
+                interval.tick().await;
+                let mut mix_buf = [0i16; BUF_SIZE];
+                for packet_buffer_entry in user_to_packet_buffer.iter() {
+                    let mut packet_buffer = packet_buffer_entry.val().lock().unwrap();
+                    loop {
+                        match packet_buffer.front() {
+                            Some(user_packet)
+                            => {}
+                            // if user_packet.timestamp - packet_buffer.first_timestamp > 1 => {
+                            //     println!("timestamp diff {}", user_packet.timestamp - packet_buffer.first_timestamp);
+                            // }
+                            _ => break
+                        }
+                        let user_packet = packet_buffer.pop_front().unwrap();
+                        if user_packet.len() != BUF_SIZE {
+                            println!("incorrect buffer size packet received, size {}", user_packet.len());
+                            continue;
+                        }
+                        for i in 0..BUF_SIZE {
+                            mix_buf[i] = mix_buf[i].checked_add(user_packet[i])
+                                .unwrap_or_else(|| {
+                                    if user_packet[i] < 0 {
+                                        return i16::MIN;
+                                    }
+                                    return i16::MAX;
+                                });
+                        }
+                    }
+                }
+
+                let mut circ_buf = output_buffer.lock().unwrap();
+                mix_buf.iter().for_each(|sample| { circ_buf.push(*sample); });
+            }
+        });
+        self.background_tasks.push(join_handle);
     }
 
     fn play_sound(data: &Vec<i16>) {
@@ -190,7 +223,7 @@ impl VoiceEventHandler for Receiver {
                 // An event which fires for every received audio packet,
                 // containing the decoded data.
                 if let Some(audio) = audio {
-                    self.add_sound(audio.clone());
+                    self.add_sound(packet.ssrc, audio.clone());
                 } else {
                     println!("RTP packet, but no audio. Driver may not be configured to decode.");
                 }
