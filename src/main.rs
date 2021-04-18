@@ -7,23 +7,14 @@
 //! features = ["client", "standard_framework", "voice"]
 //! ```
 
-use std::collections::vec_deque::VecDeque;
 use std::env;
-use std::iter::Peekable;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::thread::sleep;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use circular_queue::CircularQueue;
-use cpal;
-use cpal::{BufferSize, Sample, SampleRate, StreamConfig};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use lockfree::map::Map;
 use lockfree::queue::Queue;
-use rodio::buffer::SamplesBuffer;
-use rodio::dynamic_mixer::DynamicMixerController;
-use rodio::Source;
 use serenity::{
     async_trait,
     client::{Client, Context, EventHandler},
@@ -49,11 +40,9 @@ use songbird::{
     Event,
     EventContext,
     EventHandler as VoiceEventHandler,
-    model::payload::{ClientConnect, ClientDisconnect, Speaking},
     SerenityInit,
     Songbird,
 };
-use songbird::opus::ffi::OpusRepacketizer;
 use tokio::task::JoinHandle;
 
 struct Handler;
@@ -65,22 +54,20 @@ impl EventHandler for Handler {
     }
 }
 
-const BUF_SIZE: usize = 1920; // 20ms @ 48kHz of 2ch 16 bit pcm
+const BUFFER_SIZE: usize = 2 * 48000 * 60;
+// 60 seconds
+const AUDIO_PACKET_SIZE: usize = 1920; // 20ms @ 48kHz of 2ch 16 bit pcm
 
 struct Receiver {
     buf: Arc<Mutex<CircularQueue<i16>>>,
-    user_to_packet_buffer: Arc<Map<u32, Queue<[i16; BUF_SIZE]>>>,
+    user_to_packet_buffer: Arc<Map<u32, Queue<[i16; AUDIO_PACKET_SIZE]>>>,
     background_tasks: Vec<JoinHandle<()>>,
 }
 
 impl Receiver {
     pub fn new() -> Self {
-        // You can manage state here, such as a buffer of audio packet bytes so
-        // you can later store them in intervals.
-        const SIZE: usize = 2 * 48000 * 60; // 60 seconds
-
         let mut receiver = Self {
-            buf: Arc::new(Mutex::new(CircularQueue::with_capacity(SIZE))),
+            buf: Arc::new(Mutex::new(CircularQueue::with_capacity(BUFFER_SIZE))),
             user_to_packet_buffer: Arc::new(Map::new()),
             background_tasks: Vec::new(),
         };
@@ -89,13 +76,16 @@ impl Receiver {
     }
 
     pub fn add_sound(&self, ssrc: u32, data: Vec<i16>) {
-        if data.len() != BUF_SIZE {
+        if data.len() != AUDIO_PACKET_SIZE {
             return;
         }
-        let mut buf = [0i16; BUF_SIZE];
-        for i in 0..BUF_SIZE {
+        let mut buf = [0i16; AUDIO_PACKET_SIZE];
+        for i in 0..AUDIO_PACKET_SIZE {
             buf[i] = data[i];
         }
+        // the lock free map doesn't have an insert if not present.
+        // it's okay to lose a few packets at the start, and even that is unlikely for one user
+        // to trigger multiple packets at the same time.
         self.user_to_packet_buffer.get(&ssrc).unwrap_or_else(|| {
             self.user_to_packet_buffer.insert(ssrc, Default::default());
             self.user_to_packet_buffer.get(&ssrc).unwrap()
@@ -111,14 +101,14 @@ impl Receiver {
         let join_handle = tokio::spawn(async move {
             loop {
                 interval.tick().await;
-                let mut mix_buf = [0i16; BUF_SIZE];
+                let mut mix_buf = [0i16; AUDIO_PACKET_SIZE];
                 for packet_buffer_entry in user_to_packet_buffer.iter() {
                     for user_packet in packet_buffer_entry.val().pop_iter() {
-                        if user_packet.len() != BUF_SIZE {
+                        if user_packet.len() != AUDIO_PACKET_SIZE {
                             println!("incorrect buffer size packet received, size {}", user_packet.len());
                             continue;
                         }
-                        for i in 0..BUF_SIZE {
+                        for i in 0..AUDIO_PACKET_SIZE {
                             mix_buf[i] = mix_buf[i].checked_add(user_packet[i])
                                 .unwrap_or_else(|| {
                                     if user_packet[i] < 0 {
@@ -135,17 +125,6 @@ impl Receiver {
             }
         });
         self.background_tasks.push(join_handle);
-    }
-
-    fn play_sound(data: &Vec<i16>) {
-        let cloned_data = data.clone();
-        tokio::spawn(async move {
-            let samples_buffer = SamplesBuffer::new(2, 48000, cloned_data);
-            let duration = samples_buffer.total_duration().unwrap();
-            let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
-            stream_handle.play_raw(samples_buffer.convert_samples()).expect("something broke");
-            sleep(duration * 2)
-        });
     }
 
     pub fn drain_buffer(&self) {
@@ -178,79 +157,15 @@ impl VoiceEventHandler for Receiver {
     async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
         use EventContext as Ctx;
         match ctx {
-            Ctx::SpeakingStateUpdate(
-                Speaking { speaking, ssrc, user_id, .. }
-            ) => {
-                // Discord voice calls use RTP, where every sender uses a randomly allocated
-                // *Synchronisation Source* (SSRC) to allow receivers to tell which audio
-                // stream a received packet belongs to. As this number is not derived from
-                // the sender's user_id, only Discord Voice Gateway messages like this one
-                // inform us about which random SSRC a user has been allocated. Future voice
-                // packets will contain *only* the SSRC.
-                //
-                // You can implement logic here so that you can differentiate users'
-                // SSRCs and map the SSRC to the User ID and maintain this state.
-                // Using this map, you can map the `ssrc` in `voice_packet`
-                // to the user ID and handle their audio packets separately.
-                println!(
-                    "Speaking state update: user {:?} has SSRC {:?}, using {:?}",
-                    user_id,
-                    ssrc,
-                    speaking,
-                );
-            }
-            Ctx::SpeakingUpdate { ssrc, speaking } => {
-                // You can implement logic here which reacts to a user starting
-                // or stopping speaking.
-                println!(
-                    "Source {} has {} speaking.",
-                    ssrc,
-                    if *speaking { "started" } else { "stopped" },
-                );
-            }
             Ctx::VoicePacket { audio, packet, payload_offset, payload_end_pad } => {
-                // An event which fires for every received audio packet,
-                // containing the decoded data.
                 if let Some(audio) = audio {
                     self.add_sound(packet.ssrc, audio.clone());
                 } else {
                     println!("RTP packet, but no audio. Driver may not be configured to decode.");
                 }
             }
-            Ctx::RtcpPacket { packet, payload_offset, payload_end_pad } => {
-                // An event which fires for every received rtcp packet,
-                // containing the call statistics and reporting information.
-                println!("RTCP packet received: {:?}", packet);
-            }
-            Ctx::ClientConnect(
-                ClientConnect { audio_ssrc, video_ssrc, user_id, .. }
-            ) => {
-                // You can implement your own logic here to handle a user who has joined the
-                // voice channel e.g., allocate structures, map their SSRC to User ID.
-
-                println!(
-                    "Client connected: user {:?} has audio SSRC {:?}, video SSRC {:?}",
-                    user_id,
-                    audio_ssrc,
-                    video_ssrc,
-                );
-            }
-            Ctx::ClientDisconnect(
-                ClientDisconnect { user_id, .. }
-            ) => {
-                // You can implement your own logic here to handle a user who has left the
-                // voice channel e.g., finalise processing of statistics etc.
-                // You will typically need to map the User ID to their SSRC; observed when
-                // speaking or connecting.
-
-                println!("Client disconnected: user {:?}", user_id);
-            }
-            _ => {
-                // We won't be registering this struct for any more event classes.
-                unimplemented!()
-            }
+            _ => {}
         }
-
         None
     }
 }
@@ -268,13 +183,11 @@ impl<T: VoiceEventHandler> VoiceEventHandler for ArcEventHandlerInvoker<T> {
 }
 
 #[group]
-#[commands(join, leave, ping, dump)]
+#[commands(join, leave, dump)]
 struct General;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
-
     // Configure the client with your Discord bot token in the environment.
     let token = env::var("DISCORD_TOKEN")
         .expect("Expected a token in the environment");
@@ -331,39 +244,12 @@ async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
     if let Ok(_) = conn_result {
         // NOTE: this skips listening for the actual connection result.
         let mut handler = handler_lock.lock().await;
-
-        // handler.add_global_event(
-        //     CoreEvent::SpeakingStateUpdate.into(),
-        //     Receiver::new(),
-        // );
-
-        // handler.add_global_event(
-        //     CoreEvent::SpeakingUpdate.into(),
-        //     Receiver::new(),
-        // );
         let data_read = ctx.data.read().await;
         let receiver = data_read.get::<Receiver>().unwrap().clone();
         handler.add_global_event(
             CoreEvent::VoicePacket.into(),
             ArcEventHandlerInvoker { delegate: receiver },
         );
-
-
-        // handler.add_global_event(
-        //     CoreEvent::RtcpPacket.into(),
-        //     Receiver::new(),
-        // );
-
-        // handler.add_global_event(
-        //     CoreEvent::ClientConnect.into(),
-        //     Receiver::new(),
-        // );
-        //
-        // handler.add_global_event(
-        //     CoreEvent::ClientDisconnect.into(),
-        //     Receiver::new(),
-        // );
-
         check_msg(msg.channel_id.say(&ctx.http, &format!("Joined {}", connect_to.mention())).await);
     } else {
         check_msg(msg.channel_id.say(&ctx.http, "Error joining the channel").await);
@@ -391,13 +277,6 @@ async fn leave(ctx: &Context, msg: &Message) -> CommandResult {
     } else {
         check_msg(msg.reply(ctx, "Not in a voice channel").await);
     }
-
-    Ok(())
-}
-
-#[command]
-async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
-    check_msg(msg.channel_id.say(&ctx.http, "Pong!").await);
 
     Ok(())
 }

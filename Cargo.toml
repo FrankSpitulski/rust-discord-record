@@ -7,15 +7,9 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tracing = "0.1"
-tracing-subscriber = "0.2"
-tracing-futures = "0.2"
-rodio = "0.13"
 songbird = "0.1"
 circular-queue = "0.2"
 hound = "3.4"
-cpal = "0.13"
-chashmap = "2.2"
 lockfree = "0.5"
 
 [dependencies.serenity]
