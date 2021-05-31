@@ -11,6 +11,7 @@ songbird = "0.1"
 circular-queue = "0.2"
 lockfree = "0.5"
 ogg-opus = "0.1"
+chrono = "0.4"
 
 [dependencies.serenity]
 version = "0.10"

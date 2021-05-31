@@ -1188,6 +1188,7 @@ dependencies = [
 name = "rust-discord-record"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "circular-queue",
  "lockfree",
  "ogg-opus",

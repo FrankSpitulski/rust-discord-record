@@ -7,42 +7,31 @@
 //! features = ["client", "standard_framework", "voice"]
 //! ```
 
-use std::env;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
+use chrono;
 use circular_queue::CircularQueue;
 use lockfree::map::Map;
 use lockfree::queue::Queue;
+use serenity::prelude::TypeMapKey;
 use serenity::{
     async_trait,
     client::{Client, Context, EventHandler},
     framework::{
         standard::{
-            Args,
-            CommandResult, macros::{command, group},
+            macros::{command, group},
+            Args, CommandResult,
         },
         StandardFramework,
     },
-    model::{
-        channel::Message,
-        gateway::Ready,
-        id::ChannelId,
-        misc::Mentionable,
-    },
+    model::{channel::Message, gateway::Ready, id::ChannelId, misc::Mentionable},
     Result as SerenityResult,
 };
-use serenity::prelude::TypeMapKey;
 use songbird::{
-    CoreEvent,
     driver::{Config as DriverConfig, DecodeMode},
-    Event,
-    EventContext,
-    EventHandler as VoiceEventHandler,
-    SerenityInit,
-    Songbird,
+    CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler, SerenityInit, Songbird,
 };
+use std::env;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::task::JoinHandle;
 
 struct Handler;
@@ -54,8 +43,10 @@ impl EventHandler for Handler {
     }
 }
 
+const AUDIO_FREQUENCY: u32 = 48000;
+const AUDIO_CHANNELS: u8 = 2;
 /// 1 hour
-const BUFFER_SIZE: usize = 2 * 48000 * 60 * 60;
+const BUFFER_SIZE: usize = AUDIO_CHANNELS as usize * AUDIO_FREQUENCY as usize * 60 * 60;
 const AUDIO_PACKET_SIZE: usize = 1920; // 20ms @ 48kHz of 2ch 16 bit pcm
 
 struct Receiver {
@@ -86,10 +77,12 @@ impl Receiver {
         // the lock free map doesn't have an insert if not present.
         // it's okay to lose a few packets at the start, and even that is unlikely for one user
         // to trigger multiple packets at the same time.
-        self.user_to_packet_buffer.get(&ssrc).unwrap_or_else(|| {
-            self.user_to_packet_buffer.insert(ssrc, Default::default());
-            self.user_to_packet_buffer.get(&ssrc).unwrap()
-        })
+        self.user_to_packet_buffer
+            .get(&ssrc)
+            .unwrap_or_else(|| {
+                self.user_to_packet_buffer.insert(ssrc, Default::default());
+                self.user_to_packet_buffer.get(&ssrc).unwrap()
+            })
             .val()
             .push(buf);
     }
@@ -105,7 +98,10 @@ impl Receiver {
                 for packet_buffer_entry in user_to_packet_buffer.iter() {
                     for user_packet in packet_buffer_entry.val().pop_iter() {
                         if user_packet.len() != AUDIO_PACKET_SIZE {
-                            println!("incorrect buffer size packet received, size {}", user_packet.len());
+                            println!(
+                                "incorrect buffer size packet received, size {}",
+                                user_packet.len()
+                            );
                             continue;
                         }
                         for i in 0..AUDIO_PACKET_SIZE {
@@ -115,15 +111,18 @@ impl Receiver {
                 }
 
                 let mut circ_buf = output_buffer.lock().unwrap();
-                mix_buf.iter().for_each(|sample| { circ_buf.push(*sample); });
+                mix_buf.iter().for_each(|sample| {
+                    circ_buf.push(*sample);
+                });
             }
         });
         self.background_tasks.push(join_handle);
     }
 
-    pub async fn drain_buffer(&self) {
+    pub async fn drain_buffer(&self) -> Vec<u8> {
         let mut pcm = Vec::new();
-        { // closure to limit lock scope
+        {
+            // closure to limit lock scope
             let unlocked_reader = self.buf.lock().unwrap();
             println!("buf size before wav write {}", unlocked_reader.len());
             pcm.reserve(unlocked_reader.len());
@@ -131,9 +130,20 @@ impl Receiver {
                 pcm.push(*sample);
             }
         }
-        let ogg_data = ogg_opus::encode::<48000, 2>(&pcm).expect("unable to encode pcm as ogg");
-        let path: &Path = "test.ogg".as_ref();
-        tokio::fs::write(path, ogg_data).await.expect("unable to write ogg file");
+        let ogg_data = ogg_opus::encode::<AUDIO_FREQUENCY, AUDIO_CHANNELS>(&pcm)
+            .expect("unable to encode pcm as ogg");
+        println!("done");
+        ogg_data
+    }
+
+    async fn write_ogg_to_disk(ogg_data: &[u8]) {
+        let date = chrono::prelude::Local::now()
+            .format("%Y-%m-%d_%H-%M-%S.ogg")
+            .to_string();
+        println!("writing {}", date);
+        tokio::fs::write(date, &ogg_data)
+            .await
+            .expect("unable to write ogg file");
         println!("done");
     }
 }
@@ -148,7 +158,12 @@ impl VoiceEventHandler for Receiver {
     async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
         use EventContext as Ctx;
         match ctx {
-            Ctx::VoicePacket { audio, packet, payload_offset, payload_end_pad } => {
+            Ctx::VoicePacket {
+                audio,
+                packet,
+                payload_offset,
+                payload_end_pad,
+            } => {
                 if let Some(audio) = audio {
                     self.add_sound(packet.ssrc, audio.clone());
                 } else {
@@ -180,22 +195,17 @@ struct General;
 #[tokio::main]
 async fn main() {
     // Configure the client with your Discord bot token in the environment.
-    let token = env::var("DISCORD_TOKEN")
-        .expect("Expected a token in the environment");
+    let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
     let framework = StandardFramework::new()
-        .configure(|c| c
-            .prefix("!"))
+        .configure(|c| c.prefix("!"))
         .group(&GENERAL_GROUP);
 
     // Here, we need to configure Songbird to decode all incoming voice packets.
     // If you want, you can do this on a per-call basis---here, we need it to
     // read the audio data that other people are sending us!
     let songbird = Songbird::serenity();
-    songbird.set_config(
-        DriverConfig::default()
-            .decode_mode(DecodeMode::Decode)
-    );
+    songbird.set_config(DriverConfig::default().decode_mode(DecodeMode::Decode));
 
     let mut client = Client::builder(&token)
         .event_handler(Handler)
@@ -209,7 +219,10 @@ async fn main() {
         data.insert::<Receiver>(Arc::new(Receiver::new()));
     }
 
-    let _ = client.start().await.map_err(|why| println!("Client ended: {:?}", why));
+    let _ = client
+        .start()
+        .await
+        .map_err(|why| println!("Client ended: {:?}", why));
 }
 
 #[command]
@@ -218,7 +231,10 @@ async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
     let connect_to = match args.single::<u64>() {
         Ok(id) => ChannelId(id),
         Err(_) => {
-            check_msg(msg.reply(ctx, "Requires a valid voice channel ID be given").await);
+            check_msg(
+                msg.reply(ctx, "Requires a valid voice channel ID be given")
+                    .await,
+            );
 
             return Ok(());
         }
@@ -227,8 +243,10 @@ async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
     let guild = msg.guild(&ctx.cache).await.unwrap();
     let guild_id = guild.id;
 
-    let manager = songbird::get(ctx).await
-        .expect("Songbird Voice client placed in at initialisation.").clone();
+    let manager = songbird::get(ctx)
+        .await
+        .expect("Songbird Voice client placed in at initialisation.")
+        .clone();
 
     let (handler_lock, conn_result) = manager.join(guild_id, connect_to).await;
 
@@ -241,9 +259,17 @@ async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
             CoreEvent::VoicePacket.into(),
             ArcEventHandlerInvoker { delegate: receiver },
         );
-        check_msg(msg.channel_id.say(&ctx.http, &format!("Joined {}", connect_to.mention())).await);
+        check_msg(
+            msg.channel_id
+                .say(&ctx.http, &format!("Joined {}", connect_to.mention()))
+                .await,
+        );
     } else {
-        check_msg(msg.channel_id.say(&ctx.http, "Error joining the channel").await);
+        check_msg(
+            msg.channel_id
+                .say(&ctx.http, "Error joining the channel")
+                .await,
+        );
     }
 
     Ok(())
@@ -255,13 +281,19 @@ async fn leave(ctx: &Context, msg: &Message) -> CommandResult {
     let guild = msg.guild(&ctx.cache).await.unwrap();
     let guild_id = guild.id;
 
-    let manager = songbird::get(ctx).await
-        .expect("Songbird Voice client placed in at initialisation.").clone();
+    let manager = songbird::get(ctx)
+        .await
+        .expect("Songbird Voice client placed in at initialisation.")
+        .clone();
     let has_handler = manager.get(guild_id).is_some();
 
     if has_handler {
         if let Err(e) = manager.remove(guild_id).await {
-            check_msg(msg.channel_id.say(&ctx.http, format!("Failed: {:?}", e)).await);
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, format!("Failed: {:?}", e))
+                    .await,
+            );
         }
 
         check_msg(msg.channel_id.say(&ctx.http, "Left voice channel").await);
@@ -287,8 +319,16 @@ async fn dump(ctx: &Context, msg: &Message) -> CommandResult {
         receiver = data_read.get::<Receiver>().unwrap().clone();
     }
     check_msg(msg.channel_id.say(&ctx.http, "taking a dump").await);
-    receiver.drain_buffer().await;
+    let ogg_file = receiver.drain_buffer().await;
     check_msg(msg.channel_id.say(&ctx.http, "domped").await);
-
+    msg.channel_id
+        .send_files(&ctx.http, vec![(ogg_file.as_slice(), "domp.ogg")], |m| {
+            m.content("some audio file")
+        })
+        .await
+        .expect("could not upload file");
+    if msg.content.contains("file") {
+        Receiver::write_ogg_to_disk(&ogg_file).await;
+    }
     Ok(())
 }
