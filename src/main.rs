@@ -54,8 +54,8 @@ impl EventHandler for Handler {
     }
 }
 
-const BUFFER_SIZE: usize = 2 * 48000 * 60;
-// 60 seconds
+/// 1 hour
+const BUFFER_SIZE: usize = 2 * 48000 * 60 * 60;
 const AUDIO_PACKET_SIZE: usize = 1920; // 20ms @ 48kHz of 2ch 16 bit pcm
 
 struct Receiver {
@@ -109,13 +109,7 @@ impl Receiver {
                             continue;
                         }
                         for i in 0..AUDIO_PACKET_SIZE {
-                            mix_buf[i] = mix_buf[i].checked_add(user_packet[i])
-                                .unwrap_or_else(|| {
-                                    if user_packet[i] < 0 {
-                                        return i16::MIN;
-                                    }
-                                    return i16::MAX;
-                                });
+                            mix_buf[i] = mix_buf[i].saturating_add(user_packet[i]);
                         }
                     }
                 }
@@ -127,22 +121,19 @@ impl Receiver {
         self.background_tasks.push(join_handle);
     }
 
-    pub fn drain_buffer(&self) {
-        let path: &Path = "test.wav".as_ref();
-        let mut writer = hound::WavWriter::create(path, hound::WavSpec {
-            channels: 2,
-            sample_rate: 48000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        }).unwrap();
-        {
+    pub async fn drain_buffer(&self) {
+        let mut pcm = Vec::new();
+        { // closure to limit lock scope
             let unlocked_reader = self.buf.lock().unwrap();
             println!("buf size before wav write {}", unlocked_reader.len());
+            pcm.reserve(unlocked_reader.len());
             for sample in unlocked_reader.asc_iter() {
-                writer.write_sample(*sample).unwrap();
+                pcm.push(*sample);
             }
         }
-        writer.finalize().unwrap();
+        let ogg_data = ogg_opus::encode::<48000, 2>(&pcm).expect("unable to encode pcm as ogg");
+        let path: &Path = "test.ogg".as_ref();
+        tokio::fs::write(path, ogg_data).await.expect("unable to write ogg file");
         println!("done");
     }
 }
@@ -171,7 +162,7 @@ impl VoiceEventHandler for Receiver {
 }
 
 struct ArcEventHandlerInvoker<T: VoiceEventHandler> {
-    delegate: Arc<T>
+    delegate: Arc<T>,
 }
 
 #[async_trait]
@@ -296,7 +287,7 @@ async fn dump(ctx: &Context, msg: &Message) -> CommandResult {
         receiver = data_read.get::<Receiver>().unwrap().clone();
     }
     check_msg(msg.channel_id.say(&ctx.http, "taking a dump").await);
-    receiver.drain_buffer();
+    receiver.drain_buffer().await;
     check_msg(msg.channel_id.say(&ctx.http, "domped").await);
 
     Ok(())

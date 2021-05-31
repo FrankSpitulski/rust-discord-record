@@ -9,13 +9,13 @@ edition = "2018"
 [dependencies]
 songbird = "0.1"
 circular-queue = "0.2"
-hound = "3.4"
 lockfree = "0.5"
+ogg-opus = "0.1"
 
 [dependencies.serenity]
 version = "0.10"
 features = ["cache", "http", "client", "framework", "standard_framework", "voice", "rustls_backend"]
 
 [dependencies.tokio]
-version = "1.0"
+version = "1"
 features = ["macros", "rt-multi-thread", "time"]
