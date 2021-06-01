@@ -45,8 +45,8 @@ impl EventHandler for Handler {
 
 const AUDIO_FREQUENCY: u32 = 48000;
 const AUDIO_CHANNELS: u8 = 2;
-/// 1 hour
-const BUFFER_SIZE: usize = AUDIO_CHANNELS as usize * AUDIO_FREQUENCY as usize * 60 * 60;
+/// 30 minutes
+const BUFFER_SIZE: usize = AUDIO_CHANNELS as usize * AUDIO_FREQUENCY as usize * 60 * 30;
 const AUDIO_PACKET_SIZE: usize = 1920; // 20ms @ 48kHz of 2ch 16 bit pcm
 
 struct Receiver {
@@ -321,14 +321,14 @@ async fn dump(ctx: &Context, msg: &Message) -> CommandResult {
     check_msg(msg.channel_id.say(&ctx.http, "taking a dump").await);
     let ogg_file = receiver.drain_buffer().await;
     check_msg(msg.channel_id.say(&ctx.http, "domped").await);
+    if msg.content.contains("file") {
+        Receiver::write_ogg_to_disk(&ogg_file).await;
+    }
     msg.channel_id
         .send_files(&ctx.http, vec![(ogg_file.as_slice(), "domp.ogg")], |m| {
             m.content("some audio file")
         })
         .await
         .expect("could not upload file");
-    if msg.content.contains("file") {
-        Receiver::write_ogg_to_disk(&ogg_file).await;
-    }
     Ok(())
 }
