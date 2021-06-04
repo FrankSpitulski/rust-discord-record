@@ -7,6 +7,12 @@
 //! features = ["client", "standard_framework", "voice"]
 //! ```
 
+mod encode;
+
+use audiopus::{
+    coder::{Encoder as OpusEnc},
+    Bitrate,
+};
 use chrono;
 use circular_queue::CircularQueue;
 use lockfree::map::Map;
@@ -46,21 +52,33 @@ impl EventHandler for Handler {
 const AUDIO_FREQUENCY: u32 = 48000;
 const AUDIO_CHANNELS: u8 = 2;
 /// 30 minutes
-const BUFFER_SIZE: usize = AUDIO_CHANNELS as usize * AUDIO_FREQUENCY as usize * 60 * 30;
+/// 1000 / 20 samples per second. 60 seconds in a minutes. 30 minutes.
+const BUFFER_SIZE: usize = (1000 / 20) * 60 * 30;
 const AUDIO_PACKET_SIZE: usize = 1920; // 20ms @ 48kHz of 2ch 16 bit pcm
 
 struct Receiver {
-    buf: Arc<Mutex<CircularQueue<i16>>>,
+    buf: Arc<Mutex<CircularQueue<Vec<u8>>>>,
     user_to_packet_buffer: Arc<Map<u32, Queue<[i16; AUDIO_PACKET_SIZE]>>>,
     background_tasks: Vec<JoinHandle<()>>,
+    opus_encoder: Arc<Mutex<OpusEnc>>,
 }
 
 impl Receiver {
     pub fn new() -> Self {
+        let mut opus_encoder = OpusEnc::new(
+            audiopus::SampleRate::Hz48000,
+            audiopus::Channels::Stereo,
+            audiopus::Application::Audio,
+        )
+            .unwrap();
+        opus_encoder
+            .set_bitrate(Bitrate::BitsPerSecond(24000))
+            .unwrap();
         let mut receiver = Self {
             buf: Arc::new(Mutex::new(CircularQueue::with_capacity(BUFFER_SIZE))),
             user_to_packet_buffer: Arc::new(Map::new()),
             background_tasks: Vec::new(),
+            opus_encoder: Arc::new(Mutex::new(opus_encoder)),
         };
         receiver.start_task_mix_packet_buffer();
         return receiver;
@@ -90,6 +108,7 @@ impl Receiver {
     fn start_task_mix_packet_buffer(&mut self) {
         let user_to_packet_buffer = self.user_to_packet_buffer.clone();
         let output_buffer = self.buf.clone();
+        let encoder = self.opus_encoder.clone();
         let mut interval = tokio::time::interval(Duration::from_millis(20));
         let join_handle = tokio::spawn(async move {
             loop {
@@ -109,28 +128,38 @@ impl Receiver {
                         }
                     }
                 }
-
-                let mut circ_buf = output_buffer.lock().unwrap();
-                mix_buf.iter().for_each(|sample| {
-                    circ_buf.push(*sample);
-                });
+                const MAX_PACKET: usize = 4000;
+                let mut output: Vec<u8> = vec![0; MAX_PACKET];
+                let result;
+                {
+                    result = encoder
+                        .lock()
+                        .unwrap()
+                        .encode(&mix_buf, output.as_mut_slice())
+                        .unwrap();
+                }
+                output.truncate(result);
+                {
+                    output_buffer.lock().unwrap().push(output);
+                }
             }
         });
         self.background_tasks.push(join_handle);
     }
 
     pub async fn drain_buffer(&self) -> Vec<u8> {
-        let mut pcm = Vec::new();
+        let mut packets = Vec::new();
         {
             // closure to limit lock scope
             let unlocked_reader = self.buf.lock().unwrap();
             println!("buf size before wav write {}", unlocked_reader.len());
-            pcm.reserve(unlocked_reader.len());
+            packets.reserve(unlocked_reader.len());
             for sample in unlocked_reader.asc_iter() {
-                pcm.push(*sample);
+                packets.push(sample.clone());
             }
         }
-        let ogg_data = ogg_opus::encode::<AUDIO_FREQUENCY, AUDIO_CHANNELS>(&pcm)
+        println!("dumped circ buff");
+        let ogg_data = encode::encode::<AUDIO_FREQUENCY, AUDIO_CHANNELS>(&packets)
             .expect("unable to encode pcm as ogg");
         println!("done");
         ogg_data
