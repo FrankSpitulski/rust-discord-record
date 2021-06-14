@@ -28,6 +28,8 @@ jobs:
         with:
           push: true
           tags: frankspitulski/rust-discord-record:latest
+          cache-from: type=registry,ref=frankspitulski/rust-discord-record:latest
+          cache-to: type=inline
       -
         name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
