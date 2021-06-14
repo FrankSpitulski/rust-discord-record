@@ -9,14 +9,12 @@
 
 mod encode;
 
-use audiopus::{
-    coder::{Encoder as OpusEnc},
-    Bitrate,
-};
+use audiopus::{coder::Encoder as OpusEnc, Bitrate};
 use chrono;
 use circular_queue::CircularQueue;
 use lockfree::map::Map;
 use lockfree::queue::Queue;
+use serenity::model::id::GuildId;
 use serenity::prelude::TypeMapKey;
 use serenity::{
     async_trait,
@@ -42,17 +40,21 @@ use tokio::task::JoinHandle;
 
 struct Handler;
 
+const SMOOTH_BRAIN_CENTRAL: ChannelId = ChannelId(176846624432193537);
+const BOT_TEST: ChannelId = ChannelId(823808752205430794);
+const MEME: GuildId = GuildId(136200944709795840);
+
 #[async_trait]
 impl EventHandler for Handler {
-    async fn ready(&self, _: Context, ready: Ready) {
+    async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
+        join_voice_channel(&ctx, SMOOTH_BRAIN_CENTRAL, MEME, BOT_TEST).await;
     }
 }
 
 const AUDIO_FREQUENCY: u32 = 48000;
 const AUDIO_CHANNELS: u8 = 2;
-/// 30 minutes
-/// 1000 / 20 samples per second. 60 seconds in a minutes. 30 minutes.
+/// 1000 / 20 samples per second. 60 seconds in a minute. 30 minutes.
 const BUFFER_SIZE: usize = (1000 / 20) * 60 * 30;
 const AUDIO_PACKET_SIZE: usize = 1920; // 20ms @ 48kHz of 2ch 16 bit pcm
 
@@ -70,7 +72,7 @@ impl Receiver {
             audiopus::Channels::Stereo,
             audiopus::Application::Audio,
         )
-            .unwrap();
+        .unwrap();
         opus_encoder
             .set_bitrate(Bitrate::BitsPerSecond(24000))
             .unwrap();
@@ -271,7 +273,19 @@ async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
 
     let guild = msg.guild(&ctx.cache).await.unwrap();
     let guild_id = guild.id;
+    let response_channel = msg.channel_id;
 
+    join_voice_channel(ctx, connect_to, guild_id, response_channel).await;
+
+    Ok(())
+}
+
+async fn join_voice_channel(
+    ctx: &Context,
+    connect_to: ChannelId,
+    guild_id: GuildId,
+    response_channel: ChannelId,
+) {
     let manager = songbird::get(ctx)
         .await
         .expect("Songbird Voice client placed in at initialisation.")
@@ -289,19 +303,17 @@ async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
             ArcEventHandlerInvoker { delegate: receiver },
         );
         check_msg(
-            msg.channel_id
+            response_channel
                 .say(&ctx.http, &format!("Joined {}", connect_to.mention()))
                 .await,
         );
     } else {
         check_msg(
-            msg.channel_id
+            response_channel
                 .say(&ctx.http, "Error joining the channel")
                 .await,
         );
     }
-
-    Ok(())
 }
 
 #[command]

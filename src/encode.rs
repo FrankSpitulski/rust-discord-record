@@ -1,11 +1,10 @@
-
 use std::process;
 
-use byteorder::{LittleEndian, ByteOrder};
+use byteorder::{ByteOrder, LittleEndian};
 use ogg::PacketWriter;
 
-use rand::Rng;
 use ogg_opus::Error;
+use rand::Rng;
 
 //--- Code ---------------------------------------------------------------------
 
@@ -15,7 +14,9 @@ const fn to_samples<const S_PS: u32>(ms: u32) -> usize {
     ((S_PS * ms) / 1000) as usize
 }
 
-pub fn encode<const S_PS: u32, const NUM_CHANNELS: u8>(packets: &Vec<Vec<u8>>) -> Result<Vec<u8>, Error> {
+pub fn encode<const S_PS: u32, const NUM_CHANNELS: u8>(
+    packets: &Vec<Vec<u8>>,
+) -> Result<Vec<u8>, Error> {
     //NOTE: In the future the S_PS const generic will let us use const on a lot
     // of things, until then we need to use variables
 
@@ -39,9 +40,7 @@ pub fn encode<const S_PS: u32, const NUM_CHANNELS: u8>(packets: &Vec<Vec<u8>>) -
 
     let mut packet_writer = PacketWriter::new(&mut buffer);
 
-    let calc_samples = |counter: u32| -> usize {
-        (counter as usize) * frame_samples
-    };
+    let calc_samples = |counter: u32| -> usize { (counter as usize) * frame_samples };
 
     const fn granule<const S_PS: u32>(val: usize) -> u64 {
         const fn calc_sr_u64(val: u64, org_sr: u32, dest_sr: u32) -> u64 {
@@ -83,15 +82,20 @@ pub fn encode<const S_PS: u32, const NUM_CHANNELS: u8>(packets: &Vec<Vec<u8>>) -
     opus_tags.extend(&[0]); // No user comments
 
     packet_writer.write_packet(Box::new(head), serial, ogg::PacketWriteEndInfo::EndPage, 0)?;
-    packet_writer.write_packet(opus_tags.into_boxed_slice(), serial, ogg::PacketWriteEndInfo::EndPage, 0)?;
+    packet_writer.write_packet(
+        opus_tags.into_boxed_slice(),
+        serial,
+        ogg::PacketWriteEndInfo::EndPage,
+        0,
+    )?;
 
     for i in 0..packets.len() {
         packet_writer.write_packet(
             packets[i].clone().into_boxed_slice(),
             serial,
             is_end_of_stream(i == packets.len() - 1),
-            granule::<S_PS>(calc_samples((i + 1) as u32)
-            ))?;
+            granule::<S_PS>(calc_samples((i + 1) as u32)),
+        )?;
     }
 
     Ok(buffer)
