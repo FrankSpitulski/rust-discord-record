@@ -37,6 +37,7 @@ use std::env;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
+use std::path::PathBuf;
 
 struct Handler;
 
@@ -171,8 +172,10 @@ impl Receiver {
         let date = chrono::prelude::Local::now()
             .format("%Y-%m-%d_%H-%M-%S.ogg")
             .to_string();
-        println!("writing {}", date);
-        tokio::fs::write(date, &ogg_data)
+        let root_dir = env::var("DISCORD_AUDIO_DIR").unwrap_or(".".to_string());
+        let ogg_path = PathBuf::from(root_dir).join(date);
+        println!("writing {}", ogg_path.display());
+        tokio::fs::write(ogg_path, &ogg_data)
             .await
             .expect("unable to write ogg file");
         println!("done");
