@@ -30,14 +30,14 @@ use serenity::{
     Result as SerenityResult,
 };
 use songbird::{
-    driver::{Config as DriverConfig, DecodeMode},
-    CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler, SerenityInit, Songbird,
+    driver::DecodeMode, Config, CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler,
+    SerenityInit, Songbird,
 };
 use std::env;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
-use std::path::PathBuf;
 
 struct Handler;
 
@@ -192,14 +192,9 @@ impl VoiceEventHandler for Receiver {
     async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
         use EventContext as Ctx;
         match ctx {
-            Ctx::VoicePacket {
-                audio,
-                packet,
-                payload_offset,
-                payload_end_pad,
-            } => {
-                if let Some(audio) = audio {
-                    self.add_sound(packet.ssrc, audio.clone());
+            Ctx::VoicePacket(data) => {
+                if let Some(audio) = data.audio {
+                    self.add_sound(data.packet.ssrc, audio.clone());
                 } else {
                     println!("RTP packet, but no audio. Driver may not be configured to decode.");
                 }
@@ -239,7 +234,7 @@ async fn main() {
     // If you want, you can do this on a per-call basis---here, we need it to
     // read the audio data that other people are sending us!
     let songbird = Songbird::serenity();
-    songbird.set_config(DriverConfig::default().decode_mode(DecodeMode::Decode));
+    songbird.set_config(Config::default().decode_mode(DecodeMode::Decode));
 
     let mut client = Client::builder(&token)
         .event_handler(Handler)
