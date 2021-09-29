@@ -9,16 +9,18 @@
 
 mod encode;
 
+use anyhow::{bail, Context, Result};
 use audiopus::{coder::Encoder as OpusEnc, Bitrate};
 use chrono;
 use circular_queue::CircularQueue;
 use lockfree::map::Map;
 use lockfree::queue::Queue;
+use serenity::framework::standard::CommandError;
 use serenity::model::id::GuildId;
 use serenity::prelude::TypeMapKey;
 use serenity::{
-    async_trait,
-    client::{Client, Context, EventHandler},
+    async_trait, client,
+    client::{Client, EventHandler},
     framework::{
         standard::{
             macros::{command, group},
@@ -47,9 +49,11 @@ const MEME: GuildId = GuildId(136200944709795840);
 
 #[async_trait]
 impl EventHandler for Handler {
-    async fn ready(&self, ctx: Context, ready: Ready) {
+    async fn ready(&self, ctx: client::Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
-        join_voice_channel(&ctx, SMOOTH_BRAIN_CENTRAL, MEME, BOT_TEST).await;
+        join_voice_channel(&ctx, SMOOTH_BRAIN_CENTRAL, MEME, BOT_TEST)
+            .await
+            .expect("failed to join smooth brain channel on startup");
     }
 }
 
@@ -222,7 +226,7 @@ impl<T: VoiceEventHandler> VoiceEventHandler for ArcEventHandlerInvoker<T> {
 struct General;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     // Configure the client with your Discord bot token in the environment.
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
@@ -248,15 +252,13 @@ async fn main() {
         data.insert::<Receiver>(Arc::new(Receiver::new()));
     }
 
-    let _ = client
-        .start()
-        .await
-        .map_err(|why| println!("Client ended: {:?}", why));
+    let _ = client.start().await.context("Client ended: {:?}")?;
+    Ok(())
 }
 
 #[command]
 #[only_in(guilds)]
-async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
+async fn join(ctx: &client::Context, msg: &Message, mut args: Args) -> CommandResult {
     let connect_to = match args.single::<u64>() {
         Ok(id) => ChannelId(id),
         Err(_) => {
@@ -273,17 +275,17 @@ async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
     let guild_id = guild.id;
     let response_channel = msg.channel_id;
 
-    join_voice_channel(ctx, connect_to, guild_id, response_channel).await;
-
-    Ok(())
+    join_voice_channel(ctx, connect_to, guild_id, response_channel)
+        .await
+        .map_err(CommandError::from)
 }
 
 async fn join_voice_channel(
-    ctx: &Context,
+    ctx: &client::Context,
     connect_to: ChannelId,
     guild_id: GuildId,
     response_channel: ChannelId,
-) {
+) -> Result<()> {
     let manager = songbird::get(ctx)
         .await
         .expect("Songbird Voice client placed in at initialisation.")
@@ -311,12 +313,14 @@ async fn join_voice_channel(
                 .say(&ctx.http, "Error joining the channel")
                 .await,
         );
+        bail!("Error joining the channel.");
     }
+    Ok(())
 }
 
 #[command]
 #[only_in(guilds)]
-async fn leave(ctx: &Context, msg: &Message) -> CommandResult {
+async fn leave(ctx: &client::Context, msg: &Message) -> CommandResult {
     let guild = msg.guild(&ctx.cache).await.unwrap();
     let guild_id = guild.id;
 
@@ -351,7 +355,7 @@ fn check_msg(result: SerenityResult<Message>) {
 }
 
 #[command]
-async fn dump(ctx: &Context, msg: &Message) -> CommandResult {
+async fn dump(ctx: &client::Context, msg: &Message) -> CommandResult {
     let receiver;
     {
         let data_read = ctx.data.read().await;
