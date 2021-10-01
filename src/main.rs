@@ -37,6 +37,7 @@ use songbird::{
 };
 use std::env;
 use std::path::PathBuf;
+use std::process::exit;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -51,9 +52,10 @@ const MEME: GuildId = GuildId(136200944709795840);
 impl EventHandler for Handler {
     async fn ready(&self, ctx: client::Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
-        join_voice_channel(&ctx, SMOOTH_BRAIN_CENTRAL, MEME, BOT_TEST)
-            .await
-            .expect("failed to join smooth brain channel on startup");
+        if let Err(e) = join_voice_channel(&ctx, SMOOTH_BRAIN_CENTRAL, MEME, BOT_TEST).await {
+            println!("failed to join smooth brain channel on startup, exiting");
+            exit(1);
+        }
     }
 }
 
