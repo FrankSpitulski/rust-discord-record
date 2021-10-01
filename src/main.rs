@@ -53,7 +53,10 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: client::Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
         if let Err(e) = join_voice_channel(&ctx, SMOOTH_BRAIN_CENTRAL, MEME, BOT_TEST).await {
-            println!("failed to join smooth brain channel on startup, exiting");
+            println!(
+                "failed to join smooth brain channel on startup ({}), exiting",
+                e
+            );
             exit(1);
         }
     }
