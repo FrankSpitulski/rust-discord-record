@@ -21,7 +21,7 @@ COPY --from=cacher /usr/local/cargo /usr/local/cargo
 RUN cargo build --release --bin rust-discord-record
 
 FROM ubuntu:22.04 as runtime
-RUN apt-get update && apt-get install -y ca-certificates libopus0 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR app
 COPY --from=builder /app/target/release/rust-discord-record /usr/local/bin
 ENV DISCORD_TOKEN=""
