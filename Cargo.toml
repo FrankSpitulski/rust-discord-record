@@ -3,20 +3,20 @@ name = "rust-discord-record"
 version = "0.1.0"
 authors = ["Frank <frank_spitulski@yahoo.com>"]
 edition = "2021"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-songbird = "0.3"
-circular-queue = "0.2"
-lockfree = "0.5"
-ogg-opus = "0.1"
+anyhow = "1"
+async-trait = "0.1"
 audiopus = "0.2"
 byteorder = "1"
-ogg = "0.9"
-rand = "0.8"
 chrono = "0.4"
-anyhow = "1"
+circular-queue = "0.2"
+lockfree = "0.5"
+ogg = "0.9"
+ogg-opus = "0.1"
+rand = "0.8"
+songbird = "0.3"
 
 [dependencies.serenity]
 version = "0.11"
