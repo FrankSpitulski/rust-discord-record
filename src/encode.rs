@@ -49,6 +49,7 @@ pub fn encode<const S_PS: u32, const NUM_CHANNELS: u8>(
         calc_sr_u64(val as u64, S_PS, OGG_OPUS_SPS)
     }
 
+    #[rustfmt::skip]
     let opus_head: [u8; 19] = [
         b'O', b'p', b'u', b's', b'H', b'e', b'a', b'd', // Magic header
         1, // Version number, always 1
@@ -81,17 +82,12 @@ pub fn encode<const S_PS: u32, const NUM_CHANNELS: u8>(
     opus_tags.extend(vendor_str.bytes());
     opus_tags.extend(&[0]); // No user comments
 
-    packet_writer.write_packet(Box::new(head), serial, ogg::PacketWriteEndInfo::EndPage, 0)?;
-    packet_writer.write_packet(
-        opus_tags.into_boxed_slice(),
-        serial,
-        ogg::PacketWriteEndInfo::EndPage,
-        0,
-    )?;
+    packet_writer.write_packet(&head[..], serial, ogg::PacketWriteEndInfo::EndPage, 0)?;
+    packet_writer.write_packet(opus_tags, serial, ogg::PacketWriteEndInfo::EndPage, 0)?;
 
     for i in 0..packets.len() {
         packet_writer.write_packet(
-            packets[i].clone().into_boxed_slice(),
+            &packets[i],
             serial,
             is_end_of_stream(i == packets.len() - 1),
             granule::<S_PS>(calc_samples((i + 1) as u32)),

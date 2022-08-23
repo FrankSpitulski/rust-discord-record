@@ -17,7 +17,7 @@ use lockfree::map::Map;
 use lockfree::queue::Queue;
 use serenity::framework::standard::CommandError;
 use serenity::model::id::GuildId;
-use serenity::prelude::TypeMapKey;
+use serenity::prelude::{GatewayIntents, Mentionable, TypeMapKey};
 use serenity::{
     async_trait, client,
     client::{Client, EventHandler},
@@ -28,7 +28,7 @@ use serenity::{
         },
         StandardFramework,
     },
-    model::{channel::Message, gateway::Ready, id::ChannelId, misc::Mentionable},
+    model::{channel::Message, gateway::Ready, id::ChannelId},
     Result as SerenityResult,
 };
 use songbird::{
@@ -245,7 +245,7 @@ async fn main() -> Result<()> {
     let songbird = Songbird::serenity();
     songbird.set_config(Config::default().decode_mode(DecodeMode::Decode));
 
-    let mut client = Client::builder(&token)
+    let mut client = Client::builder(&token, GatewayIntents::default())
         .event_handler(Handler)
         .framework(framework)
         .register_songbird_with(songbird.into())
@@ -276,7 +276,7 @@ async fn join(ctx: &client::Context, msg: &Message, mut args: Args) -> CommandRe
         }
     };
 
-    let guild = msg.guild(&ctx.cache).await.unwrap();
+    let guild = msg.guild(&ctx.cache).unwrap();
     let guild_id = guild.id;
     let response_channel = msg.channel_id;
 
@@ -326,7 +326,7 @@ async fn join_voice_channel(
 #[command]
 #[only_in(guilds)]
 async fn leave(ctx: &client::Context, msg: &Message) -> CommandResult {
-    let guild = msg.guild(&ctx.cache).await.unwrap();
+    let guild = msg.guild(&ctx.cache).unwrap();
     let guild_id = guild.id;
 
     let manager = songbird::get(ctx)
