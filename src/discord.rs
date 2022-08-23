@@ -1,5 +1,5 @@
 use crate::receiver::{write_ogg_to_disk, Receiver};
-use anyhow::bail;
+use anyhow::Context;
 use async_trait::async_trait;
 use serenity::framework::standard::CommandError;
 use serenity::model::id::GuildId;
@@ -29,10 +29,7 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: client::Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
         if let Err(e) = join_voice_channel(&ctx, SMOOTH_BRAIN_CENTRAL, MEME, BOT_TEST).await {
-            println!(
-                "failed to join smooth brain channel on startup ({}), exiting",
-                e
-            );
+            println!("failed to join smooth brain channel on startup {:?}", e);
             exit(1);
         }
     }
@@ -90,29 +87,32 @@ async fn join_voice_channel(
 
     let (handler_lock, conn_result) = manager.join(guild_id, connect_to).await;
 
-    if conn_result.is_ok() {
-        // NOTE: this skips listening for the actual connection result.
-        let mut handler = handler_lock.lock().await;
-        let data_read = ctx.data.read().await;
-        let receiver = data_read.get::<Receiver>().unwrap().clone();
-        handler.add_global_event(
-            CoreEvent::VoicePacket.into(),
-            ArcEventHandlerInvoker { delegate: receiver },
-        );
-        check_msg(
-            response_channel
-                .say(&ctx.http, &format!("Joined {}", connect_to.mention()))
-                .await,
-        );
-    } else {
-        check_msg(
-            response_channel
-                .say(&ctx.http, "Error joining the channel")
-                .await,
-        );
-        bail!("Error joining the channel.");
+    match conn_result {
+        Ok(()) => {
+            // NOTE: this skips listening for the actual connection result.
+            let mut handler = handler_lock.lock().await;
+            let data_read = ctx.data.read().await;
+            let receiver = data_read.get::<Receiver>().unwrap().clone();
+            handler.add_global_event(
+                CoreEvent::VoicePacket.into(),
+                ArcEventHandlerInvoker { delegate: receiver },
+            );
+            check_msg(
+                response_channel
+                    .say(&ctx.http, &format!("Joined {}", connect_to.mention()))
+                    .await,
+            );
+            Ok(())
+        }
+        Err(e) => {
+            check_msg(
+                response_channel
+                    .say(&ctx.http, "Error joining the channel")
+                    .await,
+            );
+            Err(e).context("Error joining the channel")
+        }
     }
-    Ok(())
 }
 
 #[command]
