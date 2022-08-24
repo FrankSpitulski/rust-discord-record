@@ -1,0 +1,6 @@
+/target
+.idea
+*.wav
+*.pcm
+*.ogg
+.git
