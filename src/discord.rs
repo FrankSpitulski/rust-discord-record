@@ -2,8 +2,6 @@ use crate::receiver::{write_ogg_to_disk, Receiver};
 use anyhow::Context;
 use async_trait::async_trait;
 use serenity::framework::standard::CommandError;
-use serenity::model::id::GuildId;
-use serenity::prelude::Mentionable;
 use serenity::{
     client,
     client::EventHandler,
@@ -11,25 +9,26 @@ use serenity::{
         macros::{command, group},
         Args, CommandResult,
     },
-    model::{channel::Message, gateway::Ready, id::ChannelId},
+    model::{channel::Message, gateway::Ready, id::ChannelId, id::GuildId},
+    prelude::Mentionable,
     Result as SerenityResult,
 };
 use songbird::{CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler};
 use std::process::exit;
 use std::sync::Arc;
 
-const SMOOTH_BRAIN_CENTRAL: ChannelId = ChannelId(176846624432193537);
+const COOL_FRUIT_TALK: ChannelId = ChannelId(176846624432193537);
 const BOT_TEST: ChannelId = ChannelId(823808752205430794);
-const MEME: GuildId = GuildId(136200944709795840);
+const FRUIT_BANANZA: GuildId = GuildId(136200944709795840);
 
 pub struct Handler;
 
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: client::Context, ready: Ready) {
-        println!("{} is connected!", ready.user.name);
-        if let Err(e) = join_voice_channel(&ctx, SMOOTH_BRAIN_CENTRAL, MEME, BOT_TEST).await {
-            println!("failed to join smooth brain channel on startup {:?}", e);
+        tracing::info!("{} is connected!", ready.user.name);
+        if let Err(e) = join_voice_channel(&ctx, COOL_FRUIT_TALK, FRUIT_BANANZA, BOT_TEST).await {
+            tracing::error!("failed to join smooth brain channel on startup {:?}", e);
             exit(1);
         }
     }
@@ -147,7 +146,7 @@ async fn leave(ctx: &client::Context, msg: &Message) -> CommandResult {
 /// Checks that a message successfully sent; if not, then logs why to stdout.
 fn check_msg(result: SerenityResult<Message>) {
     if let Err(why) = result {
-        println!("Error sending message: {:?}", why);
+        tracing::error!("Error sending message: {:?}", why);
     }
 }
 

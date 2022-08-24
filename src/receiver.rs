@@ -78,7 +78,7 @@ impl Receiver {
                 for packet_buffer_entry in user_to_packet_buffer.iter() {
                     for user_packet in packet_buffer_entry.val().pop_iter() {
                         if user_packet.len() != AUDIO_PACKET_SIZE {
-                            println!(
+                            tracing::warn!(
                                 "incorrect buffer size packet received, size {}",
                                 user_packet.len()
                             );
@@ -113,16 +113,16 @@ impl Receiver {
         {
             // closure to limit lock scope
             let unlocked_reader = self.buf.lock().unwrap();
-            println!("buf size before wav write {}", unlocked_reader.len());
+            tracing::info!("buf size before wav write {}", unlocked_reader.len());
             packets.reserve(unlocked_reader.len());
             for sample in unlocked_reader.asc_iter() {
                 packets.push(sample.clone());
             }
         }
-        println!("dumped circ buff");
+        tracing::info!("dumped circ buff");
         let ogg_data = encode::encode::<AUDIO_FREQUENCY, AUDIO_CHANNELS>(&packets)
             .expect("unable to encode pcm as ogg");
-        println!("done");
+        tracing::info!("done");
         ogg_data
     }
 }
@@ -140,7 +140,7 @@ impl VoiceEventHandler for Receiver {
             if let Some(audio) = data.audio {
                 self.add_sound(data.packet.ssrc, audio.clone());
             } else {
-                println!("RTP packet, but no audio. Driver may not be configured to decode.");
+                tracing::warn!("RTP packet, but no audio. Driver may not be configured to decode.");
             }
         }
         None
@@ -153,9 +153,9 @@ pub async fn write_ogg_to_disk(ogg_data: &[u8]) {
         .to_string();
     let root_dir = env::var("DISCORD_AUDIO_DIR").unwrap_or_else(|_| ".".to_string());
     let ogg_path = PathBuf::from(root_dir).join(date);
-    println!("writing {}", ogg_path.display());
-    tokio::fs::write(ogg_path, &ogg_data)
+    tracing::info!("writing {}", ogg_path.display());
+    tokio::fs::write(&ogg_path, &ogg_data)
         .await
         .expect("unable to write ogg file");
-    println!("done");
+    tracing::info!("done writing {}", ogg_path.display());
 }
