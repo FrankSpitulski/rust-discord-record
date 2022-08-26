@@ -47,6 +47,8 @@ impl Receiver {
         receiver
     }
 
+    // TODO add each packet to the master record based on an offset within the buffer
+    // TODO from the exact time instead of starting every packet exactly at 20ms intervals
     pub fn add_sound(&self, ssrc: u32, data: Vec<i16>) {
         if data.len() != AUDIO_PACKET_SIZE {
             return;
