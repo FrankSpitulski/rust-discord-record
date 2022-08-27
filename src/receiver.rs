@@ -35,6 +35,8 @@ pub struct Receiver {
     opus_encoder: Arc<Mutex<OpusEnc>>,
 }
 
+const TICK_RATE_MS: u64 = 20;
+
 impl Receiver {
     pub fn new() -> Self {
         let mut opus_encoder = OpusEnc::new(
@@ -73,7 +75,7 @@ impl Receiver {
         let user_to_packet_buffer = self.user_to_packet_buffer.clone();
         let output_buffer = self.buf.clone();
         let encoder = self.opus_encoder.clone();
-        let mut interval = tokio::time::interval(Duration::from_millis(20));
+        let mut interval = tokio::time::interval(Duration::from_millis(TICK_RATE_MS));
         let join_handle = tokio::spawn(async move {
             loop {
                 interval.tick().await;
@@ -97,22 +99,41 @@ impl Receiver {
         let now = Instant::now();
         let mut mix_buf = [0i16; AUDIO_PACKET_SIZE];
         let mut packet_heap = user_to_packet_buffer.lock().await;
-
+        let mut packet_pushback = vec![];
         while let Some(packet) = packet_heap.peek() {
-            if packet.time >= now - Duration::from_millis(40) {
+            // packet must be at least 40ms old since we are buffering 2x the tick rate
+            let start_of_buffer = now - Duration::from_millis(2 * TICK_RATE_MS);
+            if packet.time >= now - Duration::from_millis(TICK_RATE_MS) {
                 break;
             }
+            const MS_TO_PACKET_INDEX_FACTOR: usize = AUDIO_PACKET_SIZE / TICK_RATE_MS as usize;
 
-            // TODO split by exact time offset
-            let packet = packet_heap
-                .pop()
-                .expect("packet disappeared between peek and pop even though we have a lock");
-            // TODO vectorize?
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..AUDIO_PACKET_SIZE {
-                mix_buf[i] = mix_buf[i].saturating_add(packet.packet[i]);
+            let offset_in_buffer_time = start_of_buffer - packet.time;
+            let offset_ms = offset_in_buffer_time.as_millis() as usize % TICK_RATE_MS as usize;
+            let packet_index = offset_ms * MS_TO_PACKET_INDEX_FACTOR;
+
+            if start_of_buffer >= packet.time {
+                // start at beginning of packet and count forward
+                let mix_buf_slice = &mut mix_buf[AUDIO_PACKET_SIZE - packet_index..];
+                #[allow(clippy::needless_range_loop)]
+                for i in 0..packet_index {
+                    mix_buf_slice[i] = mix_buf_slice[i].saturating_add(packet.packet[i]);
+                }
+                packet_heap.pop();
+            } else {
+                // start at end of packet and count back
+                let packet_index_start = AUDIO_PACKET_SIZE - packet_index;
+                let packet_slice = &packet.packet[packet_index_start..];
+                for i in 0..packet_index {
+                    mix_buf[i] = mix_buf[i].saturating_add(packet_slice[i]);
+                }
+                // push the older packets back onto the heap so we can get their second "half" in the next buffer
+                packet_pushback.push(packet_heap.pop().unwrap());
             }
         }
+        packet_pushback
+            .into_iter()
+            .for_each(|packet| packet_heap.push(packet));
         mix_buf
     }
 
