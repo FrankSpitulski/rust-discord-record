@@ -19,6 +19,7 @@ const AUDIO_CHANNELS: u8 = 2;
 /// 1000 / 20 samples per second. 60 seconds in a minute. 30 minutes.
 const BUFFER_SIZE: usize = (1000 / 20) * 60 * 30;
 const AUDIO_PACKET_SIZE: usize = 1920; // 20ms @ 48kHz of 2ch 16 bit pcm
+const PACKET_DURATION: Duration = Duration::from_millis(20);
 
 type RawAudioPacket = [i16; AUDIO_PACKET_SIZE];
 
@@ -73,7 +74,7 @@ impl Receiver {
         let user_to_packet_buffer = self.user_to_packet_buffer.clone();
         let output_buffer = self.buf.clone();
         let encoder = self.opus_encoder.clone();
-        let mut interval = tokio::time::interval(Duration::from_millis(20));
+        let mut interval = tokio::time::interval(PACKET_DURATION);
         let join_handle = tokio::spawn(async move {
             loop {
                 interval.tick().await;
@@ -99,24 +100,25 @@ impl Receiver {
         let mut packet_heap = user_to_packet_buffer.lock().await;
 
         while let Some(packet) = packet_heap.peek() {
-            if packet.time >= now - Duration::from_millis(40) {
+            if packet.time >= now - (PACKET_DURATION * 2) {
                 break;
             }
 
             // TODO split by exact time offset
             let packet = packet_heap
                 .pop()
-                .expect("packet disappeared between peek and pop even though we have a lock");
+                .expect("packet disappeared between peek and pop even though we have a lock")
+                .packet;
             // TODO vectorize?
             #[allow(clippy::needless_range_loop)]
             for i in 0..AUDIO_PACKET_SIZE {
-                mix_buf[i] = mix_buf[i].saturating_add(packet.packet[i]);
+                mix_buf[i] = mix_buf[i].saturating_add(packet[i]);
             }
         }
         mix_buf
     }
 
-    pub async fn drain_buffer(&self) -> Vec<u8> {
+    pub async fn drain_buffer(&self, duration_to_dump: Option<Duration>) -> Vec<u8> {
         let mut packets = Vec::new();
         {
             // closure to limit lock scope
@@ -128,7 +130,17 @@ impl Receiver {
             }
         }
         tracing::info!("dumped circ buff");
-        let ogg_data = encode::encode::<AUDIO_FREQUENCY, AUDIO_CHANNELS>(&packets)
+
+        let trimmed_packets = if let Some(duration_to_dump) = duration_to_dump {
+            let packets_to_dump =
+                (duration_to_dump.as_millis() / PACKET_DURATION.as_millis()) as usize;
+            let packets_start_index = packets.len().saturating_sub(packets_to_dump);
+            &packets[packets_start_index..]
+        } else {
+            &packets
+        };
+
+        let ogg_data = encode::encode::<AUDIO_FREQUENCY, AUDIO_CHANNELS>(trimmed_packets)
             .expect("unable to encode pcm as ogg");
         tracing::info!("done");
         ogg_data

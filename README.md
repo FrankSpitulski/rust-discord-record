@@ -11,4 +11,8 @@ env vars
 commands
 
 - !dump
+  - writes entire buffer to a file and uploads it to discord
 - !dump file
+  - writes to a file on the bot's local filesystem
+- !dump 5s
+  - only dumps the last 5 seconds

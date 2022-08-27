@@ -169,10 +169,28 @@ async fn dump(ctx: &client::Context, msg: &Message) -> CommandResult {
         let data_read = ctx.data.read().await;
         receiver = data_read.get::<Receiver>().unwrap().clone();
     }
+    tracing::info!("received message '{}'", msg.content);
     check_msg(msg.channel_id.say(&ctx.http, "taking a dump").await);
-    let ogg_file = receiver.drain_buffer().await;
+    let args = msg.content.split_whitespace();
+    let mut write_to_disk = false;
+    let mut drain_duration = None;
+    for arg in args {
+        match arg {
+            "file" => {
+                write_to_disk = true;
+            }
+            arg => {
+                if drain_duration == None {
+                    if let Ok(duration) = humantime::parse_duration(arg) {
+                        drain_duration = Some(duration);
+                    }
+                }
+            }
+        }
+    }
+    let ogg_file = receiver.drain_buffer(drain_duration).await;
     check_msg(msg.channel_id.say(&ctx.http, "domped").await);
-    if msg.content.contains("file") {
+    if write_to_disk {
         write_ogg_to_disk(&ogg_file).await;
     }
     msg.channel_id

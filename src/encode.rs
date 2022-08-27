@@ -14,7 +14,7 @@ const fn to_samples<const S_PS: u32>(ms: u32) -> usize {
 }
 
 pub fn encode<const S_PS: u32, const NUM_CHANNELS: u8>(
-    packets: &Vec<Vec<u8>>,
+    packets: &[Vec<u8>],
 ) -> anyhow::Result<Vec<u8>> {
     //NOTE: In the future the S_PS const generic will let us use const on a lot
     // of things, until then we need to use variables
