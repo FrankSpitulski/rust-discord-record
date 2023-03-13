@@ -36,7 +36,7 @@ impl Handler {
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: client::Context, ready: Ready) {
-        tracing::info!("{} is connected!", ready.user.name);
+        tracing::info!("{} is connected! {} v{}", ready.user.name, env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
         if let Err(e) =
             join_voice_channel(&ctx, self.voice_channel, self.guild, self.text_channel).await
         {
@@ -180,7 +180,7 @@ async fn dump(ctx: &client::Context, msg: &Message) -> CommandResult {
                 write_to_disk = true;
             }
             arg => {
-                if drain_duration == None {
+                if drain_duration.is_none() {
                     if let Ok(duration) = humantime::parse_duration(arg) {
                         drain_duration = Some(duration);
                     }

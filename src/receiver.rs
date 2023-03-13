@@ -18,40 +18,55 @@ const AUDIO_FREQUENCY: u32 = 48000;
 const AUDIO_CHANNELS: u8 = 2;
 /// 1000 / 20 samples per second. 60 seconds in a minute. 30 minutes.
 const BUFFER_SIZE: usize = (1000 / 20) * 60 * 30;
-const AUDIO_PACKET_SIZE: usize = 1920; // 20ms @ 48kHz of 2ch 16 bit pcm
+/// 20ms @ 48kHz of 2ch 16 bit pcm
+const AUDIO_PACKET_SIZE: usize = 1920;
 const PACKET_DURATION: Duration = Duration::from_millis(20);
 
 type RawAudioPacket = [i16; AUDIO_PACKET_SIZE];
 
-#[ord_by_key::ord_eq_by_key_selector(|p| Reverse(&p.time))]
-struct SortableAudioPacket {
+#[ord_by_key::ord_eq_by_key_selector(| p | Reverse(& p.time))]
+pub struct SortableAudioPacket {
     packet: RawAudioPacket,
     time: Instant,
 }
 
+#[derive(Default)]
+pub struct BufferedPacketSource {
+    packet_buffer: BinaryHeap<SortableAudioPacket>,
+}
+
+impl BufferedPacketSource {
+    pub fn peek(&self, now: Instant) -> Option<&SortableAudioPacket> {
+        match self.packet_buffer.peek() {
+            // buffer the last two packets worth of data in case more come in
+            Some(packet) if packet.time >= now - (PACKET_DURATION * 2) => None,
+            Some(packet) => Some(packet),
+            None => None,
+        }
+    }
+
+    pub fn pop(&mut self, now: Instant) -> Option<SortableAudioPacket> {
+        self.peek(now)?;
+        self.packet_buffer.pop()
+    }
+
+    pub fn push(&mut self, packet: SortableAudioPacket) {
+        self.packet_buffer.push(packet)
+    }
+}
+
 pub struct Receiver {
     buf: Arc<Mutex<CircularQueue<Vec<u8>>>>,
-    user_to_packet_buffer: Arc<Mutex<BinaryHeap<SortableAudioPacket>>>,
+    user_to_packet_buffer: Arc<Mutex<BufferedPacketSource>>,
     background_tasks: Vec<JoinHandle<()>>,
-    opus_encoder: Arc<Mutex<OpusEnc>>,
 }
 
 impl Receiver {
     pub fn new() -> Self {
-        let mut opus_encoder = OpusEnc::new(
-            audiopus::SampleRate::Hz48000,
-            audiopus::Channels::Stereo,
-            audiopus::Application::Audio,
-        )
-        .unwrap();
-        opus_encoder
-            .set_bitrate(Bitrate::BitsPerSecond(24000))
-            .unwrap();
         let mut receiver = Self {
             buf: Arc::new(Mutex::new(CircularQueue::with_capacity(BUFFER_SIZE))),
             user_to_packet_buffer: Default::default(),
-            background_tasks: Vec::new(),
-            opus_encoder: Arc::new(Mutex::new(opus_encoder)),
+            background_tasks: Default::default(),
         };
         receiver.start_task_mix_packet_buffer();
         receiver
@@ -73,49 +88,55 @@ impl Receiver {
     fn start_task_mix_packet_buffer(&mut self) {
         let user_to_packet_buffer = self.user_to_packet_buffer.clone();
         let output_buffer = self.buf.clone();
-        let encoder = self.opus_encoder.clone();
+        let mut opus_encoder = OpusEnc::new(
+            audiopus::SampleRate::Hz48000,
+            audiopus::Channels::Stereo,
+            audiopus::Application::Audio,
+        ).unwrap();
+        opus_encoder
+            .set_bitrate(Bitrate::BitsPerSecond(24000))
+            .unwrap();
         let mut interval = tokio::time::interval(PACKET_DURATION);
         let join_handle = tokio::spawn(async move {
+            const MAX_PACKET: usize = 4000;
+            let mut output = [0; MAX_PACKET];
+            let empty_encoded= {
+                let result = opus_encoder.encode(&[0i16; AUDIO_PACKET_SIZE], &mut output).unwrap();
+                output[..result].to_vec()
+            };
+
             loop {
                 interval.tick().await;
                 let mix_buf = Self::create_mixed_raw_buffer(&user_to_packet_buffer).await;
-                const MAX_PACKET: usize = 4000;
-                let mut output = [0; MAX_PACKET];
-                let result;
-                {
-                    result = encoder.lock().await.encode(&mix_buf, &mut output).unwrap();
-                }
-                let output = output[..result].to_vec();
-                output_buffer.lock().await.push(output);
+                let encoded_vec = match mix_buf {
+                    None => empty_encoded.clone(),
+                    Some(mix_buf) => {
+                        let result = opus_encoder.encode(&mix_buf, &mut output).unwrap();
+                        output[..result].to_vec()
+                    }
+                };
+                output_buffer.lock().await.push(encoded_vec);
             }
         });
         self.background_tasks.push(join_handle);
     }
 
     async fn create_mixed_raw_buffer(
-        user_to_packet_buffer: &Mutex<BinaryHeap<SortableAudioPacket>>,
-    ) -> RawAudioPacket {
+        user_to_packet_buffer: &Mutex<BufferedPacketSource>,
+    ) -> Option<RawAudioPacket> {
+        let mut packet_buffer = user_to_packet_buffer.lock().await;
         let now = Instant::now();
+        packet_buffer.peek(now)?; // check for early exit if there are no voice packets
         let mut mix_buf = [0i16; AUDIO_PACKET_SIZE];
-        let mut packet_heap = user_to_packet_buffer.lock().await;
-
-        while let Some(packet) = packet_heap.peek() {
-            if packet.time >= now - (PACKET_DURATION * 2) {
-                break;
-            }
-
+        while let Some(sortable_packet) = packet_buffer.pop(now) {
             // TODO split by exact time offset
-            let packet = packet_heap
-                .pop()
-                .expect("packet disappeared between peek and pop even though we have a lock")
-                .packet;
             // TODO vectorize?
             #[allow(clippy::needless_range_loop)]
             for i in 0..AUDIO_PACKET_SIZE {
-                mix_buf[i] = mix_buf[i].saturating_add(packet[i]);
+                mix_buf[i] = mix_buf[i].saturating_add(sortable_packet.packet[i]);
             }
         }
-        mix_buf
+        Some(mix_buf)
     }
 
     pub async fn drain_buffer(&self, duration_to_dump: Option<Duration>) -> Vec<u8> {
