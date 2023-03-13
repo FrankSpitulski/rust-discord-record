@@ -36,7 +36,7 @@ pub struct BufferedPacketSource {
 }
 
 impl BufferedPacketSource {
-    pub fn peek(&self, now: Instant) -> Option<&SortableAudioPacket> {
+    fn peek(&self, now: Instant) -> Option<&SortableAudioPacket> {
         match self.packet_buffer.peek() {
             // buffer the last two packets worth of data in case more come in
             Some(packet) if packet.time >= now - (PACKET_DURATION * 2) => None,
@@ -45,13 +45,28 @@ impl BufferedPacketSource {
         }
     }
 
-    pub fn pop(&mut self, now: Instant) -> Option<SortableAudioPacket> {
+    fn pop(&mut self, now: Instant) -> Option<SortableAudioPacket> {
         self.peek(now)?;
         self.packet_buffer.pop()
     }
 
     pub fn push(&mut self, packet: SortableAudioPacket) {
         self.packet_buffer.push(packet)
+    }
+
+    fn create_mixed_raw_buffer(&mut self) -> Option<RawAudioPacket> {
+        let now = Instant::now();
+        self.peek(now)?; // check for early exit if there are no voice packets
+        let mut mix_buf = [0i16; AUDIO_PACKET_SIZE];
+        while let Some(sortable_packet) = self.pop(now) {
+            // TODO split by exact time offset
+            // TODO vectorize?
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..AUDIO_PACKET_SIZE {
+                mix_buf[i] = mix_buf[i].saturating_add(sortable_packet.packet[i]);
+            }
+        }
+        Some(mix_buf)
     }
 }
 
@@ -100,14 +115,14 @@ impl Receiver {
         let join_handle = tokio::spawn(async move {
             const MAX_PACKET: usize = 4000;
             let mut output = [0; MAX_PACKET];
-            let empty_encoded= {
+            let empty_encoded = {
                 let result = opus_encoder.encode(&[0i16; AUDIO_PACKET_SIZE], &mut output).unwrap();
                 output[..result].to_vec()
             };
 
             loop {
                 interval.tick().await;
-                let mix_buf = Self::create_mixed_raw_buffer(&user_to_packet_buffer).await;
+                let mix_buf = { user_to_packet_buffer.lock().await.create_mixed_raw_buffer() };
                 let encoded_vec = match mix_buf {
                     None => empty_encoded.clone(),
                     Some(mix_buf) => {
@@ -119,24 +134,6 @@ impl Receiver {
             }
         });
         self.background_tasks.push(join_handle);
-    }
-
-    async fn create_mixed_raw_buffer(
-        user_to_packet_buffer: &Mutex<BufferedPacketSource>,
-    ) -> Option<RawAudioPacket> {
-        let mut packet_buffer = user_to_packet_buffer.lock().await;
-        let now = Instant::now();
-        packet_buffer.peek(now)?; // check for early exit if there are no voice packets
-        let mut mix_buf = [0i16; AUDIO_PACKET_SIZE];
-        while let Some(sortable_packet) = packet_buffer.pop(now) {
-            // TODO split by exact time offset
-            // TODO vectorize?
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..AUDIO_PACKET_SIZE {
-                mix_buf[i] = mix_buf[i].saturating_add(sortable_packet.packet[i]);
-            }
-        }
-        Some(mix_buf)
     }
 
     pub async fn drain_buffer(&self, duration_to_dump: Option<Duration>) -> Vec<u8> {

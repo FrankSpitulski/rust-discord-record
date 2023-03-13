@@ -164,11 +164,10 @@ fn check_msg(result: SerenityResult<Message>) {
 
 #[command]
 async fn dump(ctx: &client::Context, msg: &Message) -> CommandResult {
-    let receiver;
-    {
+    let receiver = {
         let data_read = ctx.data.read().await;
-        receiver = data_read.get::<Receiver>().unwrap().clone();
-    }
+        data_read.get::<Receiver>().unwrap().clone()
+    };
     tracing::info!("received message '{}'", msg.content);
     check_msg(msg.channel_id.say(&ctx.http, "taking a dump").await);
     let args = msg.content.split_whitespace();
