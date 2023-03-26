@@ -60,7 +60,6 @@ impl BufferedPacketSource {
         let mut mix_buf = [0i16; AUDIO_PACKET_SIZE];
         while let Some(sortable_packet) = self.pop(now) {
             // TODO split by exact time offset
-            // TODO vectorize?
             #[allow(clippy::needless_range_loop)]
             for i in 0..AUDIO_PACKET_SIZE {
                 mix_buf[i] = mix_buf[i].saturating_add(sortable_packet.packet[i]);
