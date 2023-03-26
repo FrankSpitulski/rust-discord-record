@@ -31,3 +31,6 @@ features = ["cache", "http", "client", "framework", "standard_framework", "voice
 [dependencies.tokio]
 version = "1"
 features = ["macros", "rt-multi-thread", "time"]
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.5"
