@@ -13,6 +13,7 @@ mod receiver;
 
 use anyhow::Context;
 use receiver::Receiver;
+use serenity::all::standard::Configuration;
 use serenity::model::id::{ChannelId, GuildId};
 use serenity::prelude::GatewayIntents;
 use serenity::{client::Client, framework::StandardFramework};
@@ -43,9 +44,8 @@ async fn main() -> anyhow::Result<()> {
         .expect("Expected a text channel id in the environment")
         .parse()?;
 
-    let framework = StandardFramework::new()
-        .configure(|c| c.prefix("!"))
-        .group(&discord::GENERAL_GROUP);
+    let framework = StandardFramework::new().group(&discord::GENERAL_GROUP);
+    framework.configure(Configuration::new().prefix("!"));
 
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
 
@@ -56,9 +56,9 @@ async fn main() -> anyhow::Result<()> {
 
     let mut client = Client::builder(&token, intents)
         .event_handler(discord::Handler::new(
-            GuildId(guild_id),
-            ChannelId(voice_channel_id),
-            ChannelId(text_channel_id),
+            GuildId::new(guild_id),
+            ChannelId::new(voice_channel_id),
+            ChannelId::new(text_channel_id),
         ))
         .framework(framework)
         .register_songbird_from_config(songbird_config)

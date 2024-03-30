@@ -173,12 +173,15 @@ impl VoiceEventHandler for Receiver {
     #[allow(unused_variables)]
     async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
         use songbird::EventContext as Ctx;
-        if let Ctx::VoicePacket(data) = ctx {
-            if let Some(audio) = data.audio {
-                self.add_sound(data.packet.ssrc, audio).await;
-            } else {
-                tracing::warn!("RTP packet, but no audio. Driver may not be configured to decode.");
+        if let Ctx::VoiceTick(data) = ctx {
+            for (ssrc, data) in &data.speaking {
+                if let Some(audio) = &data.decoded_voice {
+                    self.add_sound(*ssrc, audio).await;
+                } else {
+                    tracing::warn!("RTP packet, but no audio. Driver may not be configured to decode.");
+                }
             }
+            
         }
         None
     }

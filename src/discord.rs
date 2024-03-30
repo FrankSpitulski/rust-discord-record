@@ -1,13 +1,12 @@
 use crate::receiver::{write_ogg_to_disk, Receiver};
-use anyhow::Context;
 use async_trait::async_trait;
-use serenity::framework::standard::CommandError;
+use serenity::all::{CreateAttachment, CreateMessage};
 use serenity::{
     client,
     client::EventHandler,
     framework::standard::{
         macros::{command, group},
-        Args, CommandResult,
+        CommandResult,
     },
     model::{channel::Message, gateway::Ready, id::ChannelId, id::GuildId},
     prelude::Mentionable,
@@ -36,7 +35,12 @@ impl Handler {
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: client::Context, ready: Ready) {
-        tracing::info!("{} is connected! {} v{}", ready.user.name, env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        tracing::info!(
+            "{} is connected! {} v{}",
+            ready.user.name,
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        );
         if let Err(e) =
             join_voice_channel(&ctx, self.voice_channel, self.guild, self.text_channel).await
         {
@@ -58,32 +62,8 @@ impl<T: VoiceEventHandler> VoiceEventHandler for ArcEventHandlerInvoker<T> {
 }
 
 #[group]
-#[commands(join, leave, dump)]
+#[commands(dump)]
 struct General;
-
-#[command]
-#[only_in(guilds)]
-async fn join(ctx: &client::Context, msg: &Message, mut args: Args) -> CommandResult {
-    let connect_to = match args.single::<u64>() {
-        Ok(id) => ChannelId(id),
-        Err(_) => {
-            check_msg(
-                msg.reply(ctx, "Requires a valid voice channel ID be given")
-                    .await,
-            );
-
-            return Ok(());
-        }
-    };
-
-    let guild = msg.guild(&ctx.cache).unwrap();
-    let guild_id = guild.id;
-    let response_channel = msg.channel_id;
-
-    join_voice_channel(ctx, connect_to, guild_id, response_channel)
-        .await
-        .map_err(CommandError::from)
-}
 
 async fn join_voice_channel(
     ctx: &client::Context,
@@ -96,62 +76,20 @@ async fn join_voice_channel(
         .expect("Songbird Voice client placed in at initialisation.")
         .clone();
 
-    let (handler_lock, conn_result) = manager.join(guild_id, connect_to).await;
+    let handler_lock = manager.join(guild_id, connect_to).await?;
 
-    match conn_result {
-        Ok(()) => {
-            // NOTE: this skips listening for the actual connection result.
-            let mut handler = handler_lock.lock().await;
-            let data_read = ctx.data.read().await;
-            let receiver = data_read.get::<Receiver>().unwrap().clone();
-            handler.add_global_event(
-                CoreEvent::VoicePacket.into(),
-                ArcEventHandlerInvoker { delegate: receiver },
-            );
-            check_msg(
-                response_channel
-                    .say(&ctx.http, &format!("Joined {}", connect_to.mention()))
-                    .await,
-            );
-            Ok(())
-        }
-        Err(e) => {
-            check_msg(
-                response_channel
-                    .say(&ctx.http, "Error joining the channel")
-                    .await,
-            );
-            Err(e).context("Error joining the channel")
-        }
-    }
-}
-
-#[command]
-#[only_in(guilds)]
-async fn leave(ctx: &client::Context, msg: &Message) -> CommandResult {
-    let guild = msg.guild(&ctx.cache).unwrap();
-    let guild_id = guild.id;
-
-    let manager = songbird::get(ctx)
-        .await
-        .expect("Songbird Voice client placed in at initialisation.")
-        .clone();
-    let has_handler = manager.get(guild_id).is_some();
-
-    if has_handler {
-        if let Err(e) = manager.remove(guild_id).await {
-            check_msg(
-                msg.channel_id
-                    .say(&ctx.http, format!("Failed: {:?}", e))
-                    .await,
-            );
-        }
-
-        check_msg(msg.channel_id.say(&ctx.http, "Left voice channel").await);
-    } else {
-        check_msg(msg.reply(ctx, "Not in a voice channel").await);
-    }
-
+    let mut handler = handler_lock.lock().await;
+    let data_read = ctx.data.read().await;
+    let receiver = data_read.get::<Receiver>().unwrap().clone();
+    handler.add_global_event(
+        CoreEvent::VoiceTick.into(),
+        ArcEventHandlerInvoker { delegate: receiver },
+    );
+    check_msg(
+        response_channel
+            .say(&ctx.http, &format!("Joined {}", connect_to.mention()))
+            .await,
+    );
     Ok(())
 }
 
@@ -192,10 +130,13 @@ async fn dump(ctx: &client::Context, msg: &Message) -> CommandResult {
     if write_to_disk {
         write_ogg_to_disk(&ogg_file).await;
     }
+
     msg.channel_id
-        .send_files(&ctx.http, vec![(ogg_file.as_slice(), "domp.ogg")], |m| {
-            m.content("some audio file")
-        })
+        .send_files(
+            &ctx.http,
+            [CreateAttachment::bytes(ogg_file.as_slice(), "domp.ogg")],
+            CreateMessage::new().content("some audio file"),
+        )
         .await
         .expect("could not upload file");
     Ok(())
