@@ -1,6 +1,6 @@
 [package]
 name = "rust-discord-record"
-version = "0.2.3"
+version = "0.2.4"
 authors = ["Frank <frank_spitulski@yahoo.com>"]
 edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -24,10 +24,11 @@ songbird = { version = "0.4", features = ["receive"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tokio = { version = "1", features = ["full"] }
+poise = "0.6.1"
 
 [dependencies.serenity]
 version = "0.12"
-features = ["cache", "http", "client", "framework", "standard_framework", "voice", "rustls_backend"]
+features = ["cache", "http", "client", "framework", "voice", "rustls_backend"]
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.5"

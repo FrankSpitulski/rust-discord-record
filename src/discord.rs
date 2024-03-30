@@ -1,13 +1,10 @@
 use crate::receiver::{write_ogg_to_disk, Receiver};
+use anyhow::Error;
 use async_trait::async_trait;
-use serenity::all::{CreateAttachment, CreateMessage};
+use poise::{Context, CreateReply};
+use serenity::all::CreateAttachment;
 use serenity::{
     client,
-    client::EventHandler,
-    framework::standard::{
-        macros::{command, group},
-        CommandResult,
-    },
     model::{channel::Message, gateway::Ready, id::ChannelId, id::GuildId},
     prelude::Mentionable,
     Result as SerenityResult,
@@ -16,37 +13,23 @@ use songbird::{CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler
 use std::process::exit;
 use std::sync::Arc;
 
-pub struct Handler {
+pub async fn on_ready(
+    ctx: &client::Context,
+    ready: &Ready,
     guild: GuildId,
     voice_channel: ChannelId,
     text_channel: ChannelId,
-}
-
-impl Handler {
-    pub fn new(guild: GuildId, voice_channel: ChannelId, text_channel: ChannelId) -> Self {
-        Self {
-            guild,
-            voice_channel,
-            text_channel,
-        }
-    }
-}
-
-#[async_trait]
-impl EventHandler for Handler {
-    async fn ready(&self, ctx: client::Context, ready: Ready) {
-        tracing::info!(
-            "{} is connected! {} v{}",
-            ready.user.name,
-            env!("CARGO_PKG_NAME"),
-            env!("CARGO_PKG_VERSION")
-        );
-        if let Err(e) =
-            join_voice_channel(&ctx, self.voice_channel, self.guild, self.text_channel).await
-        {
-            tracing::error!("failed to join voice channel on startup {:?}", e);
-            exit(1);
-        }
+    receiver: Arc<Receiver>,
+) {
+    tracing::info!(
+        "{} is connected! {} v{}",
+        ready.user.name,
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION")
+    );
+    if let Err(e) = join_voice_channel(ctx, voice_channel, guild, text_channel, receiver).await {
+        tracing::error!("failed to join voice channel on startup {:?}", e);
+        exit(1);
     }
 }
 
@@ -61,15 +44,12 @@ impl<T: VoiceEventHandler> VoiceEventHandler for ArcEventHandlerInvoker<T> {
     }
 }
 
-#[group]
-#[commands(dump)]
-struct General;
-
 async fn join_voice_channel(
     ctx: &client::Context,
     connect_to: ChannelId,
     guild_id: GuildId,
     response_channel: ChannelId,
+    receiver: Arc<Receiver>,
 ) -> anyhow::Result<()> {
     let manager = songbird::get(ctx)
         .await
@@ -79,12 +59,13 @@ async fn join_voice_channel(
     let handler_lock = manager.join(guild_id, connect_to).await?;
 
     let mut handler = handler_lock.lock().await;
-    let data_read = ctx.data.read().await;
-    let receiver = data_read.get::<Receiver>().unwrap().clone();
     handler.add_global_event(
         CoreEvent::VoiceTick.into(),
-        ArcEventHandlerInvoker { delegate: receiver },
+        ArcEventHandlerInvoker {
+            delegate: receiver.clone(),
+        },
     );
+
     check_msg(
         response_channel
             .say(&ctx.http, &format!("Joined {}", connect_to.mention()))
@@ -100,15 +81,15 @@ fn check_msg(result: SerenityResult<Message>) {
     }
 }
 
-#[command]
-async fn dump(ctx: &client::Context, msg: &Message) -> CommandResult {
-    let receiver = {
-        let data_read = ctx.data.read().await;
-        data_read.get::<Receiver>().unwrap().clone()
-    };
-    tracing::info!("received message '{}'", msg.content);
-    check_msg(msg.channel_id.say(&ctx.http, "taking a dump").await);
-    let args = msg.content.split_whitespace();
+#[poise::command(prefix_command)]
+pub async fn dump(
+    ctx: Context<'_, Arc<Receiver>, Error>,
+    command: Option<String>,
+) -> Result<(), Error> {
+    let command = command.unwrap_or_default();
+    tracing::info!("received message '{}'", command);
+    ctx.say("taking a dump").await?;
+    let args = command.split_whitespace();
     let mut write_to_disk = false;
     let mut drain_duration = None;
     for arg in args {
@@ -125,19 +106,17 @@ async fn dump(ctx: &client::Context, msg: &Message) -> CommandResult {
             }
         }
     }
-    let ogg_file = receiver.drain_buffer(drain_duration).await;
-    check_msg(msg.channel_id.say(&ctx.http, "domped").await);
+    let receiver = ctx.data();
+    let ogg_file: Vec<u8> = receiver.drain_buffer(drain_duration).await;
+    ctx.say("domped").await?;
     if write_to_disk {
         write_ogg_to_disk(&ogg_file).await;
     }
-
-    msg.channel_id
-        .send_files(
-            &ctx.http,
-            [CreateAttachment::bytes(ogg_file.as_slice(), "domp.ogg")],
-            CreateMessage::new().content("some audio file"),
-        )
-        .await
-        .expect("could not upload file");
+    ctx.send(
+        CreateReply::default()
+            .content("some audio file")
+            .attachment(CreateAttachment::bytes(ogg_file, "domp.ogg")),
+    )
+    .await?;
     Ok(())
 }

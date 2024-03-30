@@ -1,28 +1,17 @@
-//! Requires the "client", "standard_framework", and "voice" features be enabled
-//! in your Cargo.toml, like so:
-//!
-//! ```toml
-//! [dependencies.serenity]
-//! git = "https://github.com/serenity-rs/serenity.git"
-//! features = ["client", "standard_framework", "voice"]
-//! ```
+use anyhow::Context;
+use receiver::Receiver;
+use serenity::client::Client;
+use serenity::model::id::{ChannelId, GuildId};
+use serenity::prelude::GatewayIntents;
+use songbird::{driver::DecodeMode, Config, SerenityInit};
+use std::env;
+use std::sync::Arc;
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
 
 mod discord;
 mod encode;
 mod receiver;
-
-use anyhow::Context;
-use receiver::Receiver;
-use serenity::all::standard::Configuration;
-use serenity::model::id::{ChannelId, GuildId};
-use serenity::prelude::GatewayIntents;
-use serenity::{client::Client, framework::StandardFramework};
-use songbird::{driver::DecodeMode, Config, SerenityInit};
-use std::env;
-use std::sync::Arc;
-
-#[cfg(not(target_env = "msvc"))]
-use tikv_jemallocator::Jemalloc;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -44,8 +33,32 @@ async fn main() -> anyhow::Result<()> {
         .expect("Expected a text channel id in the environment")
         .parse()?;
 
-    let framework = StandardFramework::new().group(&discord::GENERAL_GROUP);
-    framework.configure(Configuration::new().prefix("!"));
+    let framework = poise::Framework::builder()
+        .options(poise::FrameworkOptions {
+            commands: vec![discord::dump()],
+            prefix_options: poise::PrefixFrameworkOptions {
+                prefix: Some("!".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .setup(move |ctx, ready, framework| {
+            Box::pin(async move {
+                let receiver = Arc::new(Receiver::new());
+                discord::on_ready(
+                    ctx,
+                    ready,
+                    GuildId::new(guild_id),
+                    ChannelId::new(voice_channel_id),
+                    ChannelId::new(text_channel_id),
+                    receiver.clone(),
+                )
+                .await;
+                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                Ok(receiver)
+            })
+        })
+        .build();
 
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
 
@@ -55,20 +68,10 @@ async fn main() -> anyhow::Result<()> {
     let songbird_config = Config::default().decode_mode(DecodeMode::Decode);
 
     let mut client = Client::builder(&token, intents)
-        .event_handler(discord::Handler::new(
-            GuildId::new(guild_id),
-            ChannelId::new(voice_channel_id),
-            ChannelId::new(text_channel_id),
-        ))
         .framework(framework)
         .register_songbird_from_config(songbird_config)
         .await
         .expect("Err creating client");
-
-    {
-        let mut data = client.data.write().await;
-        data.insert::<Receiver>(Arc::new(Receiver::new()));
-    }
 
     client.start().await.context("Client ended: {:?}")
 }
