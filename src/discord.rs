@@ -1,7 +1,7 @@
 use crate::receiver::{write_ogg_to_disk, Receiver};
 use anyhow::Error;
 use async_trait::async_trait;
-use poise::{Context, CreateReply};
+use poise::CreateReply;
 use serenity::all::CreateAttachment;
 use serenity::{
     client,
@@ -10,8 +10,9 @@ use serenity::{
     Result as SerenityResult,
 };
 use songbird::{CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler};
-use std::process::exit;
 use std::sync::Arc;
+
+type Context<'a> = poise::Context<'a, Arc<Receiver>, Error>;
 
 pub async fn on_ready(
     ctx: &client::Context,
@@ -20,17 +21,19 @@ pub async fn on_ready(
     voice_channel: ChannelId,
     text_channel: ChannelId,
     receiver: Arc<Receiver>,
-) {
+) -> anyhow::Result<()> {
     tracing::info!(
         "{} is connected! {} v{}",
         ready.user.name,
         env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_VERSION")
     );
-    if let Err(e) = join_voice_channel(ctx, voice_channel, guild, text_channel, receiver).await {
-        tracing::error!("failed to join voice channel on startup {:?}", e);
-        exit(1);
-    }
+    join_voice_channel(ctx, voice_channel, guild, text_channel, receiver)
+        .await
+        .map_err(|e| {
+            tracing::error!("failed to join voice channel on startup {:?}", e);
+            e
+        })
 }
 
 struct ArcEventHandlerInvoker<T: VoiceEventHandler> {
@@ -81,11 +84,8 @@ fn check_msg(result: SerenityResult<Message>) {
     }
 }
 
-#[poise::command(prefix_command)]
-pub async fn dump(
-    ctx: Context<'_, Arc<Receiver>, Error>,
-    command: Option<String>,
-) -> Result<(), Error> {
+#[poise::command(prefix_command, slash_command)]
+pub async fn dump(ctx: Context<'_>, command: Option<String>) -> Result<(), Error> {
     let command = command.unwrap_or_default();
     tracing::info!("received message '{}'", command);
     ctx.say("taking a dump").await?;

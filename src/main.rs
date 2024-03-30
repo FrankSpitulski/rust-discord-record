@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
                     ChannelId::new(text_channel_id),
                     receiver.clone(),
                 )
-                .await;
+                .await?;
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
                 Ok(receiver)
             })
