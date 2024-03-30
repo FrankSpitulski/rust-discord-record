@@ -1,4 +1,4 @@
-ARG IMAGE_VERSION=1.77.1
+ARG IMAGE_VERSION=1.77.0
 
 FROM rust:${IMAGE_VERSION} as base
 RUN apt-get update && apt-get install -y cmake && rm -rf /var/lib/apt/lists/*
