@@ -1,13 +1,14 @@
 use crate::encode;
 use crate::receiver::{
-    empty_raw_audio, make_opus_encoder, RawAudioPacket, AUDIO_CHANNELS, AUDIO_FREQUENCY,
-    MAX_OPUS_PACKET,
+    empty_raw_audio, make_opus_encoder, read_ogg_file, user_to_ogg_file, RawAudioPacket,
+    AUDIO_CHANNELS, AUDIO_FREQUENCY, MAX_OPUS_PACKET,
 };
 use audiopus::coder::Encoder;
 use circular_queue::CircularQueue;
 use nohash_hasher::NoHashHasher;
 use songbird::model::id::UserId;
 use std::collections::HashMap;
+use std::env;
 use std::hash::BuildHasherDefault;
 use tokio::sync::{Mutex, RwLock};
 
@@ -17,6 +18,28 @@ const BUFFER_SIZE: usize = (1000 / 20) * 60 * 2;
 #[derive(Default)]
 pub struct Tts {
     pub per_user_sound_buffer: RwLock<PerUserSoundBuffer>,
+    client: reqwest::Client,
+}
+
+impl Tts {
+    pub async fn tts(&self, user: UserId, text: String) -> anyhow::Result<bytes::Bytes> {
+        let tts_host = env::var("TTS_HOST")?;
+        let ogg_file = read_ogg_file(user_to_ogg_file(user)).await?;
+        let file_part = reqwest::multipart::Part::bytes(ogg_file)
+            .file_name("speaker.ogg")
+            .mime_str("audio/ogg")?;
+        let form = reqwest::multipart::Form::new()
+            .part("speaker", file_part)
+            .text("text", text);
+        let response = self
+            .client
+            .post(format!("{}/tts", tts_host))
+            .multipart(form)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(response.bytes().await?)
+    }
 }
 
 pub struct PerUserSoundBuffer {

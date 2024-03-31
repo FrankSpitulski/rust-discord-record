@@ -7,6 +7,7 @@ env vars
 - GUILD_ID
 - VOICE_CHANNEL_ID
 - TEXT_CHANNEL_ID
+- TTS_HOST
 
 commands
 
@@ -16,3 +17,5 @@ commands
   - writes to a file on the bot's local filesystem
 - !dump 5s
   - only dumps the last 5 seconds
+- !clone
+- !ctts

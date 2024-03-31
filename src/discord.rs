@@ -1,5 +1,5 @@
-use crate::receiver::{write_ogg_to_disk, write_ogg_to_disk_named, Receiver};
-use anyhow::Error;
+use crate::receiver::{user_to_ogg_file, write_ogg_to_disk, write_ogg_to_disk_named, Receiver};
+use anyhow::{anyhow, Error};
 use async_trait::async_trait;
 use poise::CreateReply;
 use serenity::all::CreateAttachment;
@@ -9,8 +9,12 @@ use serenity::{
     prelude::Mentionable,
     Result as SerenityResult,
 };
+use songbird::input::core::io::MediaSource;
+use songbird::input::core::probe::Hint;
+use songbird::input::{AudioStream, Input, LiveInput};
 use songbird::model::id::UserId;
 use songbird::{CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler};
+use std::io;
 use std::sync::Arc;
 
 type Context<'a> = poise::Context<'a, Arc<Receiver>, Error>;
@@ -57,8 +61,7 @@ async fn join_voice_channel(
 ) -> anyhow::Result<()> {
     let manager = songbird::get(ctx)
         .await
-        .expect("Songbird Voice client placed in at initialisation.")
-        .clone();
+        .ok_or_else(|| anyhow!("Songbird Voice client placed in at initialisation."))?;
 
     let handler_lock = manager.join(guild_id, connect_to).await?;
 
@@ -130,8 +133,8 @@ pub async fn dump(ctx: Context<'_>, command: Option<String>) -> Result<(), Error
 
 #[poise::command(prefix_command, slash_command)]
 pub async fn clone(ctx: Context<'_>, user: poise::serenity_prelude::User) -> Result<(), Error> {
-    tracing::info!("cloning last 2m of voice for user '{}", user);
-    ctx.say(format!("cloning last 2m of voice for user '{}", user))
+    tracing::info!("cloning last 2m of voice for user '{}'", user);
+    ctx.say(format!("cloning last 2m of voice for user '{}'", user))
         .await?;
     let receiver = ctx.data();
 
@@ -143,7 +146,39 @@ pub async fn clone(ctx: Context<'_>, user: poise::serenity_prelude::User) -> Res
         .await
         .get_ogg_buffer(user_id)?;
 
-    write_ogg_to_disk_named(&ogg_file, format!("{}.ogg", user_id).into()).await;
+    write_ogg_to_disk_named(&ogg_file, user_to_ogg_file(user_id)).await;
     ctx.say("finished cloning").await?;
+    Ok(())
+}
+
+#[poise::command(prefix_command, slash_command)]
+pub async fn ctts(
+    ctx: Context<'_>,
+    user: poise::serenity_prelude::User,
+    text: String,
+) -> Result<(), Error> {
+    tracing::info!("tts for user '{}': {}", user, text);
+    ctx.say("working on tts").await?;
+
+    let receiver = ctx.data();
+    let user_id = UserId(user.id.get());
+    let ogg_output = receiver.tts.tts(user_id, text).await?;
+
+    let manager = songbird::get(ctx.serenity_context())
+        .await
+        .ok_or_else(|| anyhow!("Songbird Voice client placed in at initialisation."))?;
+
+    if let Some(handler_lock) = manager.get(receiver.guild_id) {
+        let mut handler = handler_lock.lock().await;
+        let mut hint = Hint::default();
+        hint.mime_type("audio/ogg").with_extension("ogg");
+        let audio_stream: AudioStream<Box<dyn MediaSource>> = AudioStream {
+            input: Box::new(io::Cursor::new(ogg_output)),
+            hint: Some(hint),
+        };
+        let input = Input::Live(LiveInput::Raw(audio_stream), None);
+        let _ = handler.play_input(input);
+    }
+    ctx.say("finished tts").await?;
     Ok(())
 }

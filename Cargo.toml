@@ -1,6 +1,6 @@
 [package]
 name = "rust-discord-record"
-version = "0.2.4"
+version = "0.3.0"
 authors = ["Frank <frank_spitulski@yahoo.com>"]
 edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -25,13 +25,16 @@ ogg = "0.9"
 ord_by_key = "0.1"
 #ogg-opus = "0.1" # embedded as encode.rs with modifications
 rand = "0.8"
-songbird = { version = "0.4", features = ["receive"] }
+songbird = { version = "0.4", features = ["receive", "builtin-queue"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tokio = { version = "1", features = ["full"] }
 poise = "0.6.1"
 nohash-hasher = "0.2.0"
 dashmap = "5.5.3"
+reqwest = { version = "0.12.2", features = ["multipart"] }
+bytes = "1.6.0"
+symphonia = "0.5.4"
 
 [dependencies.serenity]
 version = "0.12"

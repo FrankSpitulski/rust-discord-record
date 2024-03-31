@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![discord::dump(), discord::clone()],
+            commands: vec![discord::dump(), discord::clone(), discord::ctts()],
             prefix_options: poise::PrefixFrameworkOptions {
                 prefix: Some("!".into()),
                 ..Default::default()
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
         })
         .setup(move |ctx, ready, framework| {
             Box::pin(async move {
-                let receiver = Arc::new(Receiver::new());
+                let receiver = Arc::new(Receiver::new(GuildId::new(guild_id)));
                 discord::on_ready(
                     ctx,
                     ready,

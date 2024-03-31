@@ -12,6 +12,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use serenity::all::GuildId;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -78,16 +79,18 @@ pub struct Receiver {
     background_tasks: Vec<JoinHandle<()>>,
     pub tts: tts::Tts,
     ssrc_to_user: DashMap<u32, UserId>,
+    pub guild_id: GuildId,
 }
 
 impl Receiver {
-    pub fn new() -> Self {
+    pub fn new(guild_id: GuildId) -> Self {
         let mut receiver = Self {
             buf: Arc::new(Mutex::new(CircularQueue::with_capacity(BUFFER_SIZE))),
             user_to_packet_buffer: Default::default(),
             background_tasks: Default::default(),
             tts: Default::default(),
             ssrc_to_user: Default::default(),
+            guild_id,
         };
         receiver.start_task_mix_packet_buffer();
         receiver
@@ -222,6 +225,16 @@ pub async fn write_ogg_to_disk_named(ogg_data: &[u8], file_name: PathBuf) {
         .await
         .expect("unable to write ogg file");
     tracing::info!("done writing {}", ogg_path.display());
+}
+
+pub async fn read_ogg_file(file_name: PathBuf) -> anyhow::Result<Vec<u8>> {
+    let root_dir = env::var("DISCORD_AUDIO_DIR").unwrap_or_else(|_| ".".to_string());
+    let ogg_path = PathBuf::from(root_dir).join(file_name);
+    Ok(tokio::fs::read(ogg_path).await?)
+}
+
+pub fn user_to_ogg_file(user_id: UserId) -> PathBuf {
+    format!("{}.ogg", user_id).into()
 }
 
 pub fn to_raw_audio_packet(data: impl AsRef<[i16]>) -> Option<RawAudioPacket> {
