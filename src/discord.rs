@@ -1,20 +1,22 @@
-use crate::receiver::{user_to_ogg_file, write_ogg_to_disk, write_ogg_to_disk_named, Receiver};
+use std::io;
+use std::sync::Arc;
+
 use anyhow::{anyhow, Error};
 use async_trait::async_trait;
 use poise::CreateReply;
-use serenity::all::CreateAttachment;
 use serenity::{
     client,
     model::{gateway::Ready, id::ChannelId, id::GuildId},
     prelude::Mentionable,
 };
+use serenity::all::CreateAttachment;
+use songbird::{CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler};
+use songbird::input::{AudioStream, Input, LiveInput};
 use songbird::input::core::io::MediaSource;
 use songbird::input::core::probe::Hint;
-use songbird::input::{AudioStream, Input, LiveInput};
 use songbird::model::id::UserId;
-use songbird::{CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler};
-use std::io;
-use std::sync::Arc;
+
+use crate::receiver::{Receiver, user_to_ogg_file, write_ogg_to_disk, write_ogg_to_disk_named};
 
 type Context<'a> = poise::Context<'a, Arc<Receiver>, Error>;
 
@@ -99,7 +101,7 @@ pub async fn dump(
     };
 
     let receiver = ctx.data();
-    let ogg_file = receiver.drain_buffer(drain_duration).await;
+    let ogg_file = receiver.lookback.drain_buffer(drain_duration).await;
     ctx.say("dumped").await?;
     if write_to_disk {
         write_ogg_to_disk(&ogg_file).await?;

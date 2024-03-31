@@ -1,16 +1,18 @@
-use crate::encode;
-use crate::receiver::{
-    empty_raw_audio, make_opus_encoder, read_ogg_file, user_to_ogg_file, RawAudioPacket,
-    AUDIO_CHANNELS, AUDIO_FREQUENCY, MAX_OPUS_PACKET,
-};
+use std::collections::HashMap;
+use std::env;
+use std::hash::BuildHasherDefault;
+
 use audiopus::coder::Encoder;
 use circular_queue::CircularQueue;
 use nohash_hasher::NoHashHasher;
 use songbird::model::id::UserId;
-use std::collections::HashMap;
-use std::env;
-use std::hash::BuildHasherDefault;
 use tokio::sync::{Mutex, RwLock};
+
+use crate::encode;
+use crate::receiver::{
+    AUDIO_CHANNELS, AUDIO_FREQUENCY, empty_raw_audio, make_opus_encoder, MAX_OPUS_PACKET,
+    RawAudioPacket, read_ogg_file, user_to_ogg_file,
+};
 
 /// 1000 / 20 samples per second. 60 seconds in a minute. 2 minutes.
 const BUFFER_SIZE: usize = (1000 / 20) * 60 * 2;

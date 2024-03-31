@@ -1,21 +1,24 @@
 #![warn(clippy::all)]
 #![deny(warnings)]
 
+use std::env;
+use std::sync::Arc;
+
 use anyhow::Context;
-use receiver::Receiver;
 use serenity::client::Client;
 use serenity::model::id::{ChannelId, GuildId};
 use serenity::prelude::GatewayIntents;
-use songbird::{driver::DecodeMode, Config, SerenityInit};
-use std::env;
-use std::sync::Arc;
+use songbird::{Config, driver::DecodeMode, SerenityInit};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
+
+use receiver::Receiver;
 
 mod discord;
 mod encode;
 mod receiver;
 mod tts;
+mod lookback;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
