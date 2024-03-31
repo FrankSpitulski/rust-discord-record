@@ -210,21 +210,21 @@ impl VoiceEventHandler for Receiver {
     }
 }
 
-pub async fn write_ogg_to_disk(ogg_data: &[u8]) {
+pub async fn write_ogg_to_disk(ogg_data: &[u8]) -> anyhow::Result<()>{
     let date = chrono::prelude::Local::now()
         .format("%Y-%m-%d_%H-%M-%S.ogg")
         .to_string();
     write_ogg_to_disk_named(ogg_data, date.into()).await
 }
 
-pub async fn write_ogg_to_disk_named(ogg_data: &[u8], file_name: PathBuf) {
+pub async fn write_ogg_to_disk_named(ogg_data: &[u8], file_name: PathBuf) -> anyhow::Result<()> {
     let root_dir = env::var("DISCORD_AUDIO_DIR").unwrap_or_else(|_| ".".to_string());
     let ogg_path = PathBuf::from(root_dir).join(file_name);
     tracing::info!("writing {}", ogg_path.display());
     tokio::fs::write(&ogg_path, &ogg_data)
-        .await
-        .expect("unable to write ogg file");
+        .await?;
     tracing::info!("done writing {}", ogg_path.display());
+    Ok(())
 }
 
 pub async fn read_ogg_file(file_name: PathBuf) -> anyhow::Result<Vec<u8>> {

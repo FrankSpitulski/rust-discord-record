@@ -120,7 +120,7 @@ pub async fn dump(ctx: Context<'_>, command: Option<String>) -> Result<(), Error
     let ogg_file: Vec<u8> = receiver.drain_buffer(drain_duration).await;
     ctx.say("domped").await?;
     if write_to_disk {
-        write_ogg_to_disk(&ogg_file).await;
+        write_ogg_to_disk(&ogg_file).await?;
     }
     ctx.send(
         CreateReply::default()
@@ -146,7 +146,7 @@ pub async fn clone(ctx: Context<'_>, user: poise::serenity_prelude::User) -> Res
         .await
         .get_ogg_buffer(user_id)?;
 
-    write_ogg_to_disk_named(&ogg_file, user_to_ogg_file(user_id)).await;
+    write_ogg_to_disk_named(&ogg_file, user_to_ogg_file(user_id)).await?;
     ctx.say("finished cloning").await?;
     Ok(())
 }
