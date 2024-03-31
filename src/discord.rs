@@ -5,9 +5,8 @@ use poise::CreateReply;
 use serenity::all::CreateAttachment;
 use serenity::{
     client,
-    model::{channel::Message, gateway::Ready, id::ChannelId, id::GuildId},
+    model::{gateway::Ready, id::ChannelId, id::GuildId},
     prelude::Mentionable,
-    Result as SerenityResult,
 };
 use songbird::input::core::io::MediaSource;
 use songbird::input::core::probe::Hint;
@@ -79,59 +78,42 @@ async fn join_voice_channel(
         },
     );
 
-    check_msg(
-        response_channel
-            .say(&ctx.http, &format!("Joined {}", connect_to.mention()))
-            .await,
-    );
+    response_channel
+        .say(&ctx.http, &format!("Joined {}", connect_to.mention()))
+        .await?;
     Ok(())
 }
 
-/// Checks that a message successfully sent; if not, then logs why to stdout.
-fn check_msg(result: SerenityResult<Message>) {
-    if let Err(why) = result {
-        tracing::error!("Error sending message: {:?}", why);
-    }
-}
+#[poise::command(slash_command)]
+pub async fn dump(
+    ctx: Context<'_>,
+    duration: Option<String>,
+    write_to_disk: Option<bool>,
+) -> Result<(), Error> {
+    let write_to_disk = write_to_disk.unwrap_or(false);
+    tracing::info!("dumping to disk '{}'", write_to_disk);
+    ctx.say("dumping").await?;
+    let drain_duration = match duration {
+        Some(duration) => humantime::parse_duration(&duration).ok(),
+        _ => None,
+    };
 
-#[poise::command(prefix_command, slash_command)]
-pub async fn dump(ctx: Context<'_>, command: Option<String>) -> Result<(), Error> {
-    let command = command.unwrap_or_default();
-    tracing::info!("received message '{}'", command);
-    ctx.say("taking a dump").await?;
-    let args = command.split_whitespace();
-    let mut write_to_disk = false;
-    let mut drain_duration = None;
-    for arg in args {
-        match arg {
-            "file" => {
-                write_to_disk = true;
-            }
-            arg => {
-                if drain_duration.is_none() {
-                    if let Ok(duration) = humantime::parse_duration(arg) {
-                        drain_duration = Some(duration);
-                    }
-                }
-            }
-        }
-    }
     let receiver = ctx.data();
-    let ogg_file: Vec<u8> = receiver.drain_buffer(drain_duration).await;
-    ctx.say("domped").await?;
+    let ogg_file = receiver.drain_buffer(drain_duration).await;
+    ctx.say("dumped").await?;
     if write_to_disk {
         write_ogg_to_disk(&ogg_file).await?;
     }
     ctx.send(
         CreateReply::default()
             .content("some audio file")
-            .attachment(CreateAttachment::bytes(ogg_file, "domp.ogg")),
+            .attachment(CreateAttachment::bytes(ogg_file, "dump.ogg")),
     )
     .await?;
     Ok(())
 }
 
-#[poise::command(prefix_command, slash_command)]
+#[poise::command(slash_command)]
 pub async fn clone(ctx: Context<'_>, user: poise::serenity_prelude::User) -> Result<(), Error> {
     tracing::info!("cloning last 2m of voice for user '{}'", user);
     ctx.say(format!("cloning last 2m of voice for user '{}'", user))
@@ -151,7 +133,7 @@ pub async fn clone(ctx: Context<'_>, user: poise::serenity_prelude::User) -> Res
     Ok(())
 }
 
-#[poise::command(prefix_command, slash_command)]
+#[poise::command(slash_command)]
 pub async fn ctts(
     ctx: Context<'_>,
     user: poise::serenity_prelude::User,
@@ -171,7 +153,7 @@ pub async fn ctts(
     if let Some(handler_lock) = manager.get(receiver.guild_id) {
         let mut handler = handler_lock.lock().await;
         let mut hint = Hint::default();
-        hint.mime_type("audio/ogg").with_extension("ogg");
+        hint.mime_type("audio/wav").with_extension("wav");
         let audio_stream: AudioStream<Box<dyn MediaSource>> = AudioStream {
             input: Box::new(io::Cursor::new(ogg_output)),
             hint: Some(hint),
