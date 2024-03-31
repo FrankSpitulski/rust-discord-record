@@ -1,3 +1,6 @@
+#![warn(clippy::all)]
+#![deny(warnings)]
+
 use anyhow::Context;
 use receiver::Receiver;
 use serenity::client::Client;
@@ -12,6 +15,7 @@ use tikv_jemallocator::Jemalloc;
 mod discord;
 mod encode;
 mod receiver;
+mod tts;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -35,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![discord::dump()],
+            commands: vec![discord::dump(), discord::clone()],
             prefix_options: poise::PrefixFrameworkOptions {
                 prefix: Some("!".into()),
                 ..Default::default()

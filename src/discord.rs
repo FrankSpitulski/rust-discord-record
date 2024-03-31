@@ -1,4 +1,4 @@
-use crate::receiver::{write_ogg_to_disk, Receiver};
+use crate::receiver::{write_ogg_to_disk, write_ogg_to_disk_named, Receiver};
 use anyhow::Error;
 use async_trait::async_trait;
 use poise::CreateReply;
@@ -9,6 +9,7 @@ use serenity::{
     prelude::Mentionable,
     Result as SerenityResult,
 };
+use songbird::model::id::UserId;
 use songbird::{CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler};
 use std::sync::Arc;
 
@@ -68,6 +69,12 @@ async fn join_voice_channel(
             delegate: receiver.clone(),
         },
     );
+    handler.add_global_event(
+        CoreEvent::SpeakingStateUpdate.into(),
+        ArcEventHandlerInvoker {
+            delegate: receiver.clone(),
+        },
+    );
 
     check_msg(
         response_channel
@@ -118,5 +125,25 @@ pub async fn dump(ctx: Context<'_>, command: Option<String>) -> Result<(), Error
             .attachment(CreateAttachment::bytes(ogg_file, "domp.ogg")),
     )
     .await?;
+    Ok(())
+}
+
+#[poise::command(prefix_command, slash_command)]
+pub async fn clone(ctx: Context<'_>, user: poise::serenity_prelude::User) -> Result<(), Error> {
+    tracing::info!("cloning last 2m of voice for user '{}", user);
+    ctx.say(format!("cloning last 2m of voice for user '{}", user))
+        .await?;
+    let receiver = ctx.data();
+
+    let user_id = UserId(user.id.get());
+    let ogg_file = receiver
+        .tts
+        .per_user_sound_buffer
+        .read()
+        .await
+        .get_ogg_buffer(user_id)?;
+
+    write_ogg_to_disk_named(&ogg_file, format!("{}.ogg", user_id).into()).await;
+    ctx.say("finished cloning").await?;
     Ok(())
 }
