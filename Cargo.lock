@@ -1280,17 +1280,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ord_by_key"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42eb26b74eb43fe4639ba4bf3ca4f40b7aed7f19e88f33c2e9d777581bd7bd20"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "ordered-float"
 version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1724,7 +1713,7 @@ dependencies = [
 
 [[package]]
 name = "rust-discord-record"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1737,7 +1726,6 @@ dependencies = [
  "humantime",
  "nohash-hasher",
  "ogg",
- "ord_by_key",
  "poise",
  "rand",
  "reqwest 0.12.2",

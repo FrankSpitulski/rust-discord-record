@@ -1,6 +1,6 @@
 [package]
 name = "rust-discord-record"
-version = "0.3.2"
+version = "0.3.3"
 authors = ["Frank <frank_spitulski@yahoo.com>"]
 edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -22,7 +22,6 @@ chrono = "0.4"
 circular-queue = "0.2"
 humantime = "2"
 ogg = "0.9"
-ord_by_key = "0.1"
 #ogg-opus = "0.1" # embedded as encode.rs with modifications
 rand = "0.8"
 songbird = { version = "0.4", features = ["receive", "builtin-queue"] }

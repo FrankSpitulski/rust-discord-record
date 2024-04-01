@@ -101,7 +101,7 @@ pub async fn dump(
     };
 
     let receiver = ctx.data();
-    let ogg_file = receiver.lookback.drain_buffer(drain_duration).await;
+    let ogg_file = receiver.lookback.drain_buffer(drain_duration).await?;
     ctx.say("dumped").await?;
     if write_to_disk {
         write_ogg_to_disk(&ogg_file).await?;

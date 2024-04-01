@@ -44,29 +44,26 @@ impl VoiceEventHandler for Receiver {
         use songbird::EventContext as Ctx;
         match ctx {
             Ctx::VoiceTick(data) => {
-                let mut tts = self.tts.per_user_sound_buffer.write().await;
-                for (ssrc, data) in &data.speaking {
-                    let user = self.ssrc_to_user.get(ssrc);
-                    if let Some(user) = user {
-                        if let Some(audio) = &data.decoded_voice {
-                            let packet = to_raw_audio_packet(audio);
-                            if let Some(packet) = packet {
-                                self.lookback.add_sound_mux(*ssrc, packet).await;
+                tokio::join!(self.lookback.tick(data), async {
+                    let mut tts = self.tts.per_user_sound_buffer.write().await;
+                    for (ssrc, data) in &data.speaking {
+                        let user = self.ssrc_to_user.get(ssrc);
+                        if let Some(user) = user {
+                            if let Some(audio) = &data.decoded_voice {
+                                let packet = to_raw_audio_packet(audio);
+                                tts.push(*user, packet).await;
+                            } else {
+                                tracing::warn!("RTP packet, but no audio. Driver may not be configured to decode.");
+                                tts.push(*user, None).await;
                             }
-                            tts.push(*user, packet).await;
-                        } else {
-                            tracing::warn!(
-                                "RTP packet, but no audio. Driver may not be configured to decode."
-                            );
+                        }
+                    }
+                    for ssrc in &data.silent {
+                        if let Some(user) = self.ssrc_to_user.get(ssrc) {
                             tts.push(*user, None).await;
                         }
                     }
-                }
-                for ssrc in &data.silent {
-                    if let Some(user) = self.ssrc_to_user.get(ssrc) {
-                        tts.push(*user, None).await;
-                    }
-                }
+                });
             }
             Ctx::SpeakingStateUpdate(speaking) => {
                 if let Some(user) = speaking.user_id {
@@ -110,7 +107,7 @@ pub fn user_to_ogg_file(user_id: UserId) -> PathBuf {
     format!("{}.ogg", user_id).into()
 }
 
-fn to_raw_audio_packet(data: impl AsRef<[i16]>) -> Option<RawAudioPacket> {
+pub(crate) fn to_raw_audio_packet(data: impl AsRef<[i16]>) -> Option<RawAudioPacket> {
     data.as_ref().try_into().ok()
 }
 
