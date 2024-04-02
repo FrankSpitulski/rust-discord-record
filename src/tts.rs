@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::env;
 use std::hash::BuildHasherDefault;
+use std::sync::Mutex;
 
 use audiopus::coder::Encoder;
 use circular_queue::CircularQueue;
 use nohash_hasher::NoHashHasher;
 use songbird::model::id::UserId;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
 use crate::encode;
 use crate::receiver::{
@@ -46,9 +47,9 @@ impl Tts {
 
 pub struct PerUserSoundBuffer {
     user_to_sound_packets:
-        HashMap<UserId, CircularQueue<Vec<u8>>, BuildHasherDefault<NoHashHasher<u64>>>,
+        HashMap<UserId, CircularQueue<bytes::Bytes>, BuildHasherDefault<NoHashHasher<u64>>>,
     opus_encoder: Mutex<Encoder>, // will never actually be contested
-    empty_encoded: Vec<u8>,
+    empty_encoded: bytes::Bytes,
     output_scratch_space: [u8; MAX_OPUS_PACKET],
 }
 
@@ -61,7 +62,7 @@ impl Default for PerUserSoundBuffer {
             let result = opus_encoder
                 .encode(&empty, &mut output_scratch_space)
                 .unwrap();
-            output_scratch_space[..result].to_vec()
+            bytes::Bytes::copy_from_slice(&output_scratch_space[..result])
         };
 
         Self {
@@ -74,8 +75,8 @@ impl Default for PerUserSoundBuffer {
 }
 
 impl PerUserSoundBuffer {
-    pub async fn push(&mut self, user: UserId, data: Option<RawAudioPacket>) {
-        let encoded_packet = self.encode_opus_packet(data).await;
+    pub fn push(&mut self, user: UserId, data: Option<RawAudioPacket>) {
+        let encoded_packet = self.encode_opus_packet(data);
         let buf = self
             .user_to_sound_packets
             .entry(user)
@@ -83,15 +84,15 @@ impl PerUserSoundBuffer {
         buf.push(encoded_packet);
     }
 
-    async fn encode_opus_packet(&mut self, data: Option<RawAudioPacket>) -> Vec<u8> {
+    fn encode_opus_packet(&mut self, data: Option<RawAudioPacket>) -> bytes::Bytes {
         if let Some(data) = data {
             let encoded_size = self
                 .opus_encoder
                 .lock()
-                .await
+                .expect("encoded opus buf lock panicked")
                 .encode(&data, &mut self.output_scratch_space);
             if let Ok(encoded_size) = encoded_size {
-                return self.output_scratch_space[..encoded_size].to_vec();
+                return bytes::Bytes::copy_from_slice(&self.output_scratch_space[..encoded_size]);
             }
         }
         self.empty_encoded.clone()

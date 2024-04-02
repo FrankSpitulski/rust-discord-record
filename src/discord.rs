@@ -101,7 +101,7 @@ pub async fn dump(
     };
 
     let receiver = ctx.data();
-    let ogg_file = receiver.lookback.drain_buffer(drain_duration).await?;
+    let ogg_file = receiver.lookback.drain_buffer(drain_duration)?;
     ctx.say("dumped").await?;
     if write_to_disk {
         write_ogg_to_disk(&ogg_file).await?;
@@ -123,12 +123,15 @@ pub async fn clone(ctx: Context<'_>, user: poise::serenity_prelude::User) -> Res
     let receiver = ctx.data();
 
     let user_id = UserId(user.id.get());
-    let ogg_file = receiver
-        .tts
-        .per_user_sound_buffer
-        .read()
-        .await
-        .get_ogg_buffer(user_id)?;
+    let ogg_file = {
+        // closure to limit lock scope
+        receiver
+            .tts
+            .per_user_sound_buffer
+            .read()
+            .await
+            .get_ogg_buffer(user_id)?
+    };
 
     write_ogg_to_disk_named(&ogg_file, user_to_ogg_file(user_id)).await?;
     ctx.say("finished cloning").await?;

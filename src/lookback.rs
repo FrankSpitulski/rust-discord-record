@@ -1,9 +1,9 @@
+use std::sync::Mutex;
 use std::time::Duration;
 
 use audiopus::coder::Encoder;
 use circular_queue::CircularQueue;
 use songbird::events::context_data::VoiceTick;
-use tokio::sync::Mutex;
 
 use crate::encode;
 use crate::receiver::{
@@ -16,9 +16,9 @@ const BUFFER_SIZE: usize = (1000 / 20) * 60 * 30;
 const PACKET_DURATION: Duration = Duration::from_millis(20);
 
 pub struct Lookback {
-    encoded_opus_buf: Mutex<CircularQueue<Vec<u8>>>,
+    encoded_opus_buf: Mutex<CircularQueue<bytes::Bytes>>,
     opus_encoder: Mutex<Encoder>, // will never actually be contested
-    empty_encoded: Vec<u8>,
+    empty_encoded: bytes::Bytes,
     output_scratch_space: Mutex<[u8; MAX_OPUS_PACKET]>,
 }
 
@@ -31,7 +31,7 @@ impl Default for Lookback {
             let result = opus_encoder
                 .encode(&empty, &mut output_scratch_space)
                 .unwrap();
-            output_scratch_space[..result].to_vec()
+            bytes::Bytes::copy_from_slice(&output_scratch_space[..result])
         };
         Self {
             encoded_opus_buf: CircularQueue::with_capacity(BUFFER_SIZE).into(),
@@ -43,7 +43,7 @@ impl Default for Lookback {
 }
 
 impl Lookback {
-    pub async fn tick(&self, data: &VoiceTick) {
+    pub fn tick(&self, data: &VoiceTick) {
         let packet = if data.speaking.is_empty() {
             // early exit, empty packet
             self.empty_encoded.clone()
@@ -60,25 +60,34 @@ impl Lookback {
                 }
             }
 
-            let mut scratch_space = self.output_scratch_space.lock().await;
+            let mut scratch_space = self
+                .output_scratch_space
+                .lock()
+                .expect("encoder lock panicked");
             self.opus_encoder
                 .lock()
-                .await
+                .expect("encoder lock panicked")
                 .encode(&mix_buf, scratch_space.as_mut())
-                .map(|written_size| scratch_space[..written_size].to_vec())
+                .map(|written_size| bytes::Bytes::copy_from_slice(&scratch_space[..written_size]))
                 .unwrap_or_else(|_| self.empty_encoded.clone())
         };
-        self.encoded_opus_buf.lock().await.push(packet);
+        self.encoded_opus_buf
+            .lock()
+            .expect("encoded opus buf lock panicked")
+            .push(packet);
     }
 
-    pub async fn drain_buffer(
+    pub fn drain_buffer(
         &self,
         duration_to_dump: Option<Duration>,
     ) -> anyhow::Result<Vec<u8>> {
         let mut packets = Vec::new();
         {
             // closure to limit lock scope
-            let encoded_opus_buf = self.encoded_opus_buf.lock().await;
+            let encoded_opus_buf = self
+                .encoded_opus_buf
+                .lock()
+                .expect("encoded opus buf lock panicked");
             tracing::info!("buf size before wav write {}", encoded_opus_buf.len());
             packets.reserve(encoded_opus_buf.len());
             for sample in encoded_opus_buf.asc_iter() {

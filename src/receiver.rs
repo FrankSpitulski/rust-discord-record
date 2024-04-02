@@ -22,6 +22,7 @@ pub(crate) type RawAudioPacket = [i16; AUDIO_PACKET_SIZE];
 
 pub struct Receiver {
     ssrc_to_user: DashMap<u32, UserId>,
+    user_to_ssrc: DashMap<UserId, u32>,
     pub tts: tts::Tts,
     pub guild_id: GuildId,
     pub lookback: lookback::Lookback,
@@ -33,6 +34,7 @@ impl Receiver {
             tts: Default::default(),
             lookback: Default::default(),
             ssrc_to_user: Default::default(),
+            user_to_ssrc: Default::default(),
             guild_id,
         }
     }
@@ -44,26 +46,28 @@ impl VoiceEventHandler for Receiver {
         use songbird::EventContext as Ctx;
         match ctx {
             Ctx::VoiceTick(data) => {
-                tokio::join!(self.lookback.tick(data), async {
-                    let mut tts = self.tts.per_user_sound_buffer.write().await;
-                    for (ssrc, data) in &data.speaking {
-                        let user = self.ssrc_to_user.get(ssrc);
-                        if let Some(user) = user {
-                            if let Some(audio) = &data.decoded_voice {
-                                let packet = to_raw_audio_packet(audio);
-                                tts.push(*user, packet).await;
-                            } else {
-                                tracing::warn!("RTP packet, but no audio. Driver may not be configured to decode.");
-                                tts.push(*user, None).await;
-                            }
+                self.lookback.tick(data);
+
+                let mut tts = self.tts.per_user_sound_buffer.write().await;
+                for (ssrc, data) in &data.speaking {
+                    let user = self.ssrc_to_user.get(ssrc);
+                    if let Some(user) = user {
+                        if let Some(audio) = &data.decoded_voice {
+                            let packet = to_raw_audio_packet(audio);
+                            tts.push(*user, packet);
+                        } else {
+                            tracing::warn!(
+                                "RTP packet, but no audio. Driver may not be configured to decode."
+                            );
+                            tts.push(*user, None);
                         }
                     }
-                    for ssrc in &data.silent {
-                        if let Some(user) = self.ssrc_to_user.get(ssrc) {
-                            tts.push(*user, None).await;
-                        }
+                }
+                for ssrc in &data.silent {
+                    if let Some(user) = self.ssrc_to_user.get(ssrc) {
+                        tts.push(*user, None);
                     }
-                });
+                }
             }
             Ctx::SpeakingStateUpdate(speaking) => {
                 if let Some(user) = speaking.user_id {
@@ -72,6 +76,12 @@ impl VoiceEventHandler for Receiver {
                         user,
                         speaking.ssrc
                     );
+                    match self.user_to_ssrc.insert(user, speaking.ssrc) {
+                        Some(prev_ssrc) if prev_ssrc != speaking.ssrc => {
+                            self.ssrc_to_user.remove(&prev_ssrc);
+                        }
+                        _ => {}
+                    }
                     self.ssrc_to_user.insert(speaking.ssrc, user);
                 }
             }

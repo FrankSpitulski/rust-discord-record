@@ -2,19 +2,18 @@ use std::process;
 
 use byteorder::{ByteOrder, LittleEndian};
 use ogg::PacketWriter;
-
 use rand::Rng;
 
 //--- Code ---------------------------------------------------------------------
 
-const VER: &str = std::env!("CARGO_PKG_VERSION");
+const VER: &str = env!("CARGO_PKG_VERSION");
 
 const fn to_samples<const S_PS: u32>(ms: u32) -> usize {
     ((S_PS * ms) / 1000) as usize
 }
 
 pub fn encode<const S_PS: u32, const NUM_CHANNELS: u8>(
-    packets: &[Vec<u8>],
+    packets: &[impl AsRef<[u8]>],
 ) -> anyhow::Result<Vec<u8>> {
     //NOTE: In the future the S_PS const generic will let us use const on a lot
     // of things, until then we need to use variables
@@ -86,7 +85,7 @@ pub fn encode<const S_PS: u32, const NUM_CHANNELS: u8>(
 
     for i in 0..packets.len() {
         packet_writer.write_packet(
-            &packets[i],
+            packets[i].as_ref(),
             serial,
             is_end_of_stream(i == packets.len() - 1),
             granule::<S_PS>(calc_samples((i + 1) as u32)),
